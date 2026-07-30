@@ -2,6 +2,7 @@ import json
 import hashlib
 from pathlib import Path
 from datetime import date, datetime, timezone, timedelta
+from decimal import Decimal
 import random
 import re
 import requests
@@ -3139,6 +3140,8 @@ def update_world_runtime_status(conn, status):
 def _world_event_json_default(value):
     if isinstance(value, (date, datetime)):
         return value.isoformat()
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
@@ -7269,7 +7272,7 @@ def advance_world_tick(reason="background"):
                     conn,
                     "world_tick_failed",
                     "世界 tick 失败",
-                    f"后台世界推进失败：{type(exc).__name__}",
+                    f"后台世界推进失败：{type(exc).__name__}: {str(exc)[:180]}",
                     payload={"error": str(exc), "reason": reason},
                 )
                 conn.commit()

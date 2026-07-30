@@ -2,6 +2,7 @@ import json
 import sqlite3
 import unittest
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import app.main as main
 from app.models import SCHEMA_SQL
@@ -38,6 +39,26 @@ class WorldTickCompatibilityTests(unittest.TestCase):
         ).fetchone()
         payload = json.loads(stored["payload"])
         self.assertEqual(payload["nested"]["observed_at"], observed_at.isoformat())
+
+    def test_world_event_payload_serializes_postgres_decimal_values(self):
+        event = main.append_world_event(
+            self.conn,
+            "runtime_test",
+            "运行时兼容测试",
+            "PostgreSQL NUMERIC 字段可以写入事件 payload。",
+            payload={
+                "whole": Decimal("12"),
+                "fractional": Decimal("12.5"),
+                "nested": {"ratio": Decimal("0.75")},
+            },
+        )
+        stored = self.conn.execute(
+            "SELECT payload FROM world_event_stream WHERE id = ?", (event["id"],)
+        ).fetchone()
+        payload = json.loads(stored["payload"])
+        self.assertEqual(payload["whole"], 12)
+        self.assertEqual(payload["fractional"], 12.5)
+        self.assertEqual(payload["nested"]["ratio"], 0.75)
 
     def test_action_resource_state_defaults_legacy_null_values(self):
         class LegacyConnection:
