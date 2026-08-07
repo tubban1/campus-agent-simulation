@@ -127,6 +127,7 @@ docs/
 - [模拟一天流程](docs/SIMULATE_DAY_FLOW.md)
 - [校园平行世界运行时设计](docs/WORLD_RUNTIME_DESIGN.md)
 - [校园真实环境模拟路线图](docs/ENVIRONMENT_REALISM_ROADMAP.md)
+- [真实校园地理信息导入](docs/REAL_CAMPUS_GEO_IMPORT.md)
 - [外部世界数据接入与因果传播设计](docs/EXTERNAL_WORLD_DATA_DESIGN.md)
 
 ## 注意事项

@@ -115,7 +115,10 @@ def apply_action_body_effects(conn, resident_id, action, success=True):
     state = get_body_state(conn, resident_id)
     if not state:
         return None
-    effects = ACTION_EFFECTS.get(action, {})
+    effects = dict(ACTION_EFFECTS.get(action, {}))
+    if action == "rest" and success and float(state["hunger"]) >= 90:
+        effects["hunger"] = min(float(effects.get("hunger", 0)), -14)
+        effects["health"] = float(effects.get("health", 0)) + 0.5
     ratio = 1.0 if success else 0.35
     updated = {}
     for field in (
@@ -207,7 +210,7 @@ def advance_body_states(conn, world_time, tick_number, environment):
         )
         moving = state.get("movement_status") in {"moving", "replanning"}
         waiting = state.get("movement_status") == "waiting"
-        hunger = float(state["hunger"]) + elapsed_hours * (2.0 if sleeping else 4.0)
+        hunger = float(state["hunger"]) + elapsed_hours * (0.45 if sleeping else 3.2)
         fatigue = float(state["fatigue"]) + elapsed_hours * (
             -8.0 if sleeping else (5.0 if moving else 2.0)
         )
@@ -229,7 +232,9 @@ def advance_body_states(conn, world_time, tick_number, environment):
             exposure_rate = rainfall / 25.0 + max(0, abs(temperature - 22) - 8) / 5.0
         weather_exposure = float(state["weather_exposure"]) + elapsed_hours * exposure_rate
         health = float(state["health"])
-        if hunger > 90 or fatigue > 92 or weather_exposure > 80:
+        if hunger > 95:
+            health -= elapsed_hours * (0.5 if sleeping else 2.0)
+        if fatigue > 92 or weather_exposure > 80:
             health -= elapsed_hours * 2.0
         updated = {
             "hunger": _clamp(hunger),

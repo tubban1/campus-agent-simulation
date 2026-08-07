@@ -106,6 +106,61 @@ from app.spatial.runtime import (
     check_action_resource,
     spatial_runtime_available,
 )
+from app.world_runtime.clock import (
+    WORLD_TIMEZONE,
+    WORLD_TZ,
+    get_world_now,
+    get_world_plan_window,
+    parse_runtime_time,
+    parse_world_datetime,
+    previous_completed_world_window as get_previous_completed_world_window,
+    world_slot_from_hour,
+    world_tick_due,
+)
+from app.world_runtime.runner import environment_flag_enabled, run_world_runner_loop
+from app.world_runtime.scheduler import bounded_agent_batch_size
+from app.world_runtime.decision import hunger_recovery_instruction
+from app.world_runtime.observer import build_world_observer_state
+from app.world_runtime.read_service import (
+    list_action_executions as read_action_executions,
+    list_action_rules as read_action_rules,
+    list_delayed_effects as read_delayed_effects,
+    list_world_events as read_world_events,
+)
+from app.agent_read_service import (
+    build_goal_system,
+    build_social_hierarchy,
+    list_agent_learning,
+    list_long_term_goals,
+    list_relationships,
+)
+from app.social_read_service import build_profile_activity, list_group_goals, list_organizations
+from app.lifecycle_read_service import (
+    lifecycle_events,
+    lifecycle_groups,
+    lifecycle_overview,
+    lifecycle_relationships,
+    lifecycle_turning_points,
+)
+from app.simulation_read_service import fetch_simulation_logs
+from app.world_state.read_service import get_snapshot, list_branches
+from app.world_state.write_service import (
+    create_branch,
+    create_snapshot,
+    require_paused_runtime,
+    restore_snapshot,
+    switch_branch,
+)
+from app.api.world_router import router as world_api_router
+from app.api.agent_router import router as agent_api_router
+from app.api.campus_router import router as campus_api_router
+from app.world_runtime.orchestrator import (
+    run_post_tick_handlers,
+    run_agent_and_learning_stage,
+    run_pre_agent_subsystems,
+    settle_tick_completion,
+    start_world_tick,
+)
 from services.llm_service import ask_llm, is_llm_configured
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 logger = logging.getLogger(__name__)
@@ -157,6 +212,9 @@ app.include_router(resilience_router)
 app.include_router(population_router)
 app.include_router(external_world_router)
 app.include_router(longitudinal_router)
+app.include_router(world_api_router)
+app.include_router(agent_api_router)
+app.include_router(campus_api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -176,8 +234,6 @@ WORLD_RUNNER_THREAD = None
 WORLD_TICK_LOCK = Lock()
 WORLD_SCHEMA_LOCK = Lock()
 WORLD_SCHEMA_READY = False
-WORLD_TIMEZONE = "Asia/Shanghai"
-WORLD_TZ = timezone(timedelta(hours=8))
 WORLD_RUNTIME_ID = 1
 WORLD_TICK_ADVISORY_LOCK_ID = 7_436_177_031
 DEFAULT_WORLD_STALE_TICK_SECONDS = 30 * 60
@@ -2600,7 +2656,13 @@ def ensure_space_system(conn, *, allow_ddl=False):
         conn.executescript(SPACE_SYSTEM_SQL)
     ensure_table_columns(conn, "campus_spaces", {})
     ensure_table_columns(conn, "campus_events", {})
+    existing_codes = {
+        row["code"]
+        for row in conn.execute("SELECT code FROM campus_spaces").fetchall()
+    }
     for space in DEFAULT_SPACES:
+        if space[0] in existing_codes:
+            continue
         conn.execute(
             """
             INSERT OR IGNORE INTO campus_spaces
@@ -3096,46 +3158,11 @@ def seed_agent_personality_traits(conn):
         )
 
 
-def get_world_now():
-    return datetime.now(WORLD_TZ)
-
-
-def parse_world_datetime(value):
-    if not value:
-        return None
-    text = str(value).strip().replace("Z", "+00:00")
-    candidates = [text, text.replace(" ", "T")]
-    for candidate in candidates:
-        try:
-            parsed = datetime.fromisoformat(candidate)
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc if " " in text else WORLD_TZ)
-            return parsed.astimezone(WORLD_TZ)
-        except ValueError:
-            continue
-    return None
-
-
-def world_slot_from_hour(hour):
-    if 0 <= hour < 8:
-        return "00:00-08:00"
-    if 8 <= hour < 16:
-        return "08:00-16:00"
-    return "16:00-24:00"
-
-
 def previous_completed_world_window(world_time):
-    current_window_start, _ = get_world_plan_window(world_time)
-    window_start = current_window_start - timedelta(seconds=WORLD_CAMPUS_NEWS_WINDOW_SECONDS)
-    window_end = current_window_start
-    return window_start, window_end, world_slot_from_hour(window_start.hour)
-
-
-def get_world_plan_window(world_time):
-    start_hour = (world_time.hour // 8) * 8
-    window_start = world_time.replace(hour=start_hour, minute=0, second=0, microsecond=0)
-    window_end = window_start + timedelta(hours=8)
-    return window_start, window_end
+    return get_previous_completed_world_window(
+        world_time,
+        window_seconds=WORLD_CAMPUS_NEWS_WINDOW_SECONDS,
+    )
 
 
 def get_world_runtime(conn):
@@ -6204,32 +6231,20 @@ def apply_wellbeing_priority_to_decision(conn, agent, decision, world_time):
             },
         }
 
-    food_locations = ["食堂", "商业街"]
-    open_food = [
-        location
-        for location in food_locations
-        if is_location_open_at_hour(location, hour)
-    ]
-    if hunger >= 90 and action != "consume":
-        if destination in food_locations and is_location_open_at_hour(destination, hour):
-            food_location = destination
-        elif agent["location"] in food_locations and is_location_open_at_hour(agent["location"], hour):
-            food_location = agent["location"]
-        elif open_food:
-            food_location = open_food[0]
-        else:
-            food_location = "宿舍区"
-            return recovery_decision(
-                "rest",
-                food_location,
-                "食堂暂不可用，先降低消耗并等待补给窗口",
-                "饥饿过高但当前无开放补给点，优先回到安全空间降低消耗。",
-            )
+    hunger_instruction = hunger_recovery_instruction(
+        action=action,
+        destination=destination,
+        current_location=agent["location"],
+        hunger=hunger,
+        hour=hour,
+        is_location_open=is_location_open_at_hour,
+    )
+    if hunger_instruction:
         return recovery_decision(
-            "consume",
-            food_location,
-            "优先补充食物，恢复基础行动能力",
-            "饥饿已接近行动风险阈值，暂缓原计划并寻找可用食物。",
+            hunger_instruction["action"],
+            hunger_instruction["location"],
+            hunger_instruction["goal"],
+            hunger_instruction["reason"],
         )
 
     if health < 35 and action != "rest":
@@ -6956,8 +6971,20 @@ def select_world_tick_agents(conn, runtime):
     focused_agent_ids, _ = get_recent_observer_focus(conn)
     focused_set = set(focused_agent_ids)
     agent_by_id = {agent["id"]: agent for agent in eligible_agents}
-    selected = [agent_by_id[agent_id] for agent_id in focused_agent_ids if agent_id in agent_by_id]
-    per_tick = max(1, int(runtime.get("agents_per_tick", 3) or 3))
+    per_tick = bounded_agent_batch_size(
+        runtime.get("agents_per_tick", 3),
+        len(eligible_agents),
+        seed=(
+            runtime.get("last_tick_completed_at")
+            or runtime.get("world_time")
+            or runtime.get("current_agent_cursor", 0)
+        ),
+    )
+    selected = [
+        agent_by_id[agent_id]
+        for agent_id in focused_agent_ids
+        if agent_id in agent_by_id
+    ][:per_tick]
     cursor = int(runtime.get("current_agent_cursor", 0) or 0) % len(eligible_agents)
     next_cursor = cursor
     while len(selected) < per_tick and len(selected) < len(eligible_agents):
@@ -7236,254 +7263,111 @@ def _advance_world_tick_locked(reason="background"):
     tick_id = None
     try:
         with get_connection() as conn:
-            runtime = read_world_runtime(conn)
-            world_time = get_world_now()
-            day_sync = sync_current_day_with_world_date(conn, world_time)
-            day = day_sync["day"]
-            slot = world_slot_from_hour(world_time.hour)
-            tick_index_row = conn.execute("SELECT COALESCE(MAX(tick_index), 0) AS value FROM world_ticks").fetchone()
-            tick_index = int(tick_index_row["value"]) + 1
-            tick_cursor = conn.execute(
-                """
-                INSERT INTO world_ticks (tick_index, world_time, day, slot, reason, status)
-                VALUES (?, ?, ?, ?, ?, 'running')
-                """,
-                (tick_index, world_time.isoformat(), day, slot, reason),
-            )
-            tick_id = tick_cursor.lastrowid
-            conn.execute(
-                """
-                UPDATE world_runtime
-                SET last_tick_started_at = ?, world_time = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (world_time.isoformat(), world_time.isoformat(), WORLD_RUNTIME_ID),
-            )
-            # Make the running row durable and release the world_runtime row lock
-            # before plans, LLM calls, and subsystem processing begin.
-            conn.commit()
-            population_updates = process_population_runtime(conn, world_time)
-            ensure_result = ensure_current_action_plans(conn, world_time)
-            env = sync_world_time_environment(conn, world_time)
-            delayed_effects = process_due_world_delayed_effects(
+            tick = start_world_tick(
                 conn,
-                world_time,
+                reason,
+                runtime_id=WORLD_RUNTIME_ID,
+                read_runtime=read_world_runtime,
+                get_world_now=get_world_now,
+                sync_current_day=sync_current_day_with_world_date,
+                world_slot_from_hour=world_slot_from_hour,
+            )
+            runtime = tick["runtime"]
+            world_time = tick["world_time"]
+            day_sync = tick["day_sync"]
+            day = tick["day"]
+            slot = tick["slot"]
+            tick_id = tick["tick_id"]
+            tick_index = tick["tick_index"]
+            pre_agent = run_pre_agent_subsystems(
+                conn,
+                reason,
+                world_time=world_time,
                 tick_id=tick_id,
+                tick_index=tick_index,
+                day_sync=day_sync,
                 day=day,
                 slot=slot,
+                active_branch_key=lambda: active_world_branch_key(conn),
+                append_world_event=lambda *args, **kwargs: append_world_event(conn, *args, **kwargs),
+                compact_external_sync_result=compact_external_sync_result,
+                process_population_runtime=process_population_runtime,
+                ensure_current_action_plans=ensure_current_action_plans,
+                sync_world_time_environment=sync_world_time_environment,
+                process_due_world_delayed_effects=process_due_world_delayed_effects,
+                external_world_available=external_world_available,
+                process_external_world_runtime=process_external_world_runtime,
+                maybe_auto_sync_real_weather=maybe_auto_sync_real_weather,
+                get_campus_environment=get_campus_environment,
+                maybe_auto_sync_external_information=maybe_auto_sync_external_information,
+                process_resilience_runtime=process_resilience_runtime,
+                capture_tick_observations=capture_tick_observations,
+                advance_body_states=advance_body_states,
+                advance_active_movements=advance_active_movements,
+                run_due_world_updates=run_due_world_updates,
+                process_supply_runtime=process_supply_runtime,
+                process_market_runtime=process_market_runtime,
+                process_labor_runtime=process_labor_runtime,
+                process_credit_runtime=process_credit_runtime,
+                process_budget_runtime=process_budget_runtime,
+                process_public_policy_runtime=process_public_policy_runtime,
+                process_organization_runtime=process_organization_runtime,
+                process_social_institution_runtime=process_social_institution_runtime,
+                process_macro_runtime=process_macro_runtime,
             )
-            if external_world_available(conn):
-                external_world_updates = process_external_world_runtime(
-                    conn,
-                    world_time,
-                    branch_key=active_world_branch_key(conn),
-                )
-                weather_sync = {
-                    "skipped": True,
-                    "reason": "delegated_to_external_ingestion",
-                }
-                external_sync = {
-                    "skipped": True,
-                    "reason": "delegated_to_external_ingestion",
-                }
-            else:
-                external_world_updates = {"available": False}
-                weather_sync = maybe_auto_sync_real_weather(
-                    conn, world_time, tick_id=tick_id, day=day, slot=slot
-                )
-                if not weather_sync.get("skipped") and not weather_sync.get("failed"):
-                    env = get_campus_environment(conn, day)
-                external_sync = maybe_auto_sync_external_information(
-                    conn, world_time, tick_id=tick_id, day=day, slot=slot
-                )
-            resilience_updates = process_resilience_runtime(conn, world_time)
-            start_event = append_world_event(
+            start_event = pre_agent["start_event"]
+            local_observations = pre_agent["local_observations"]
+            body_states = pre_agent["body_states"]
+            movement_results = pre_agent["movement_results"]
+            movement_events = pre_agent["movement_events"]
+            multiscale_updates = pre_agent["multiscale_updates"]
+            organization_updates = pre_agent["organization_updates"]
+            organization_events = pre_agent["organization_events"]
+            supply_updates = pre_agent["supply_updates"]
+            market_updates = pre_agent["market_updates"]
+            labor_updates = pre_agent["labor_updates"]
+            credit_updates = pre_agent["credit_updates"]
+            budget_updates = pre_agent["budget_updates"]
+            public_policy_updates = pre_agent["public_policy_updates"]
+            social_institution_updates = pre_agent["social_institution_updates"]
+            macro_updates = pre_agent["macro_updates"]
+            resilience_updates = pre_agent["resilience_updates"]
+            population_updates = pre_agent["population_updates"]
+            external_world_updates = pre_agent["external_world_updates"]
+            agent_stage = run_agent_and_learning_stage(
                 conn,
-                "world_tick_started",
-                "世界 tick 开始",
-                f"{slot} tick 开始，世界正在按真实时间推进。",
+                runtime,
+                world_time=world_time,
                 tick_id=tick_id,
-                payload={
-                    "reason": reason,
-                    "plans_created": ensure_result["created"],
-                    "llm_plans": ensure_result["llm_plans"],
-                    "rule_based_plans": ensure_result["rule_based_plans"],
-                    "weather": env.get("weather"),
-                    "weather_sync": weather_sync,
-                    "external_sync": compact_external_sync_result(external_sync),
-                    "delayed_effects": {
-                        "due_count": delayed_effects["due_count"],
-                        "applied_count": len(delayed_effects["applied"]),
-                        "failed_count": len(delayed_effects["failed"]),
-                    },
-                    "resilience_updates": resilience_updates,
-                    "population_updates": population_updates,
-                    "external_world_updates": external_world_updates,
-                    "day_sync": day_sync,
-                },
+                tick_index=tick_index,
                 day=day,
                 slot=slot,
-                source_type="runtime_tick",
-                source_id=tick_id,
-            )
-            local_observations = capture_tick_observations(
-                conn,
-                world_time,
-                tick_id,
-                day,
-                branch_key=active_world_branch_key(conn),
-            )
-            body_states = advance_body_states(
-                conn,
-                world_time,
-                tick_index,
-                env,
-            )
-            movement_results = advance_active_movements(
-                conn,
-                world_time,
-                tick_index,
-            )
-            movement_events = []
-            for movement in movement_results:
-                arrived = movement["movement_status"] == "arrived"
-                movement_event = append_world_event(
-                    conn,
-                    movement["event_type"],
-                    (
-                        f"{movement.get('resident_name', 'Agent')}抵达目的地"
-                        if arrived
-                        else f"{movement.get('resident_name', 'Agent')}正在移动"
-                    ),
-                    (
-                        f"已抵达目标空间，完成本段路线。"
-                        if arrived
-                        else (
-                            f"本 tick 前进 {movement.get('distance_traveled_meters', 0):.1f} 米，"
-                            f"路线进度 {movement.get('progress', 0) * 100:.1f}%。"
-                        )
-                    ),
-                    tick_id=tick_id,
-                    resident_id=movement["resident_id"],
-                    payload=movement,
-                    day=day,
-                    slot=slot,
-                    source_type="spatial_movement",
-                    source_id=movement["resident_id"],
-                    parent_event_id=start_event["id"],
-                    rule_version="spatial-movement-v1",
-                )
-                movement_events.append(movement_event)
-            multiscale_updates = run_due_world_updates(
-                conn,
-                world_time,
-                tick_id,
-                day,
-                slot,
                 parent_event_id=start_event["id"],
+                active_branch_key=lambda: active_world_branch_key(conn),
+                select_world_tick_agents=select_world_tick_agents,
+                process_world_agent_tick=process_world_agent_tick,
+                process_adaptive_learning=process_adaptive_learning,
+                process_norm_emergence=process_norm_emergence,
+                process_institution_evolution=process_institution_evolution,
+                process_longitudinal_runtime=process_longitudinal_runtime,
             )
-            supply_updates = process_supply_runtime(conn, world_time)
-            market_updates = process_market_runtime(conn, world_time)
-            labor_updates = process_labor_runtime(conn, world_time)
-            credit_updates = process_credit_runtime(conn, world_time)
-            budget_updates = process_budget_runtime(conn, world_time)
-            public_policy_updates = process_public_policy_runtime(conn, world_time)
-            organization_updates = process_organization_runtime(conn, world_time)
-            organization_events = []
-            for proposal_id in organization_updates["executed"]:
-                proposal = conn.execute(
-                    """
-                    SELECT proposal.*, organization.name AS organization_name
-                    FROM organization_proposals proposal
-                    JOIN campus_organizations organization
-                      ON organization.id = proposal.organization_id
-                    WHERE proposal.id = ?
-                    """,
-                    (proposal_id,),
-                ).fetchone()
-                if not proposal:
-                    continue
-                organization_events.append(
-                    append_world_event(
-                        conn,
-                        "organization_collective_action",
-                        f"{proposal['organization_name']}执行集体行动",
-                        proposal["title"],
-                        tick_id=tick_id,
-                        payload={
-                            "organization_id": proposal["organization_id"],
-                            "proposal_id": proposal_id,
-                            "proposal_type": proposal["proposal_type"],
-                            "requested_budget_minor": proposal["requested_budget_minor"],
-                            "ledger_transaction_id": proposal["ledger_transaction_id"],
-                        },
-                        day=day,
-                        slot=slot,
-                        source_type="organization_proposal",
-                        source_id=proposal_id,
-                        parent_event_id=start_event["id"],
-                        rule_version="organization-runtime-v1",
-                    )
-                )
-            social_institution_updates = process_social_institution_runtime(
-                conn, world_time
-            )
-            macro_updates = process_macro_runtime(conn, world_time)
-            conn.commit()
-            selected_agents, next_cursor, focused_set = select_world_tick_agents(conn, runtime)
-            results = []
-            failed = 0
-            for agent in selected_agents:
-                item = process_world_agent_tick(
-                    conn,
-                    agent,
-                    world_time,
-                    tick_id,
-                    day,
-                    slot,
-            observed=agent["id"] in focused_set,
-            parent_event_id=start_event["id"],
-        )
-                results.append(item)
-                if not item["success"]:
-                    failed += 1
-            adaptive_learning = process_adaptive_learning(
-                conn,
-                world_time=world_time,
-                tick_id=tick_id,
-                tick_number=tick_index,
-                branch_key=active_world_branch_key(conn),
-                resident_ids=[int(agent["id"]) for agent in selected_agents],
-            )
-            norm_emergence = process_norm_emergence(
-                conn,
-                branch_key=active_world_branch_key(conn),
-                tick_number=tick_index,
-                world_time=world_time,
-            )
-            institution_evolution = process_institution_evolution(
-                conn, world_time
-            )
-            longitudinal_updates = process_longitudinal_runtime(conn, world_time)
+            selected_agents = agent_stage["selected_agents"]
+            next_cursor = agent_stage["next_cursor"]
+            results = agent_stage["results"]
+            failed = agent_stage["failed"]
+            adaptive_learning = agent_stage["adaptive_learning"]
+            norm_emergence = agent_stage["norm_emergence"]
+            institution_evolution = agent_stage["institution_evolution"]
+            longitudinal_updates = agent_stage["longitudinal_updates"]
             completed_at = get_world_now().isoformat()
-            action_limited = sum(
-                1 for item in results if item.get("action_success") is False
-            )
-            conn.execute(
-                """
-                UPDATE world_ticks
-                SET status = ?, processed_agents = ?, failed_agents = ?, completed_at = ?
-                WHERE id = ?
-                """,
-                ("failed" if failed else "complete", len(results), failed, completed_at, tick_id),
-            )
-            conn.execute(
-                """
-                UPDATE world_runtime
-                SET current_agent_cursor = ?, last_tick_completed_at = ?, world_time = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (next_cursor, completed_at, completed_at, WORLD_RUNTIME_ID),
+            action_limited = settle_tick_completion(
+                conn,
+                runtime_id=WORLD_RUNTIME_ID,
+                tick_id=tick_id,
+                next_cursor=next_cursor,
+                results=results,
+                failed=failed,
+                completed_at=completed_at,
             )
             finish_event = append_world_event(
                 conn,
@@ -7554,12 +7438,15 @@ def _advance_world_tick_locked(reason="background"):
                 source_id=tick_id,
                 parent_event_id=start_event["id"],
             )
-            # Commit completion state immediately to release the world_runtime
-            # row lock before slow post-tick operations (news, group behavior).
-            conn.commit()
-            group_behavior = maybe_generate_group_behavior_event(conn, world_time, tick_id, day, slot)
-            campus_news = maybe_publish_campus_news_from_world_window(conn, world_time, tick_id=tick_id, day=day)
-            conn.commit()
+            group_behavior, campus_news = run_post_tick_handlers(
+                conn,
+                world_time=world_time,
+                tick_id=tick_id,
+                day=day,
+                slot=slot,
+                maybe_generate_group_behavior_event=maybe_generate_group_behavior_event,
+                maybe_publish_campus_news_from_world_window=maybe_publish_campus_news_from_world_window,
+            )
             return {
                 "tick_id": tick_id,
                 "tick_index": tick_index,
@@ -7609,45 +7496,13 @@ def _advance_world_tick_locked(reason="background"):
         raise
 
 
-def parse_runtime_time(value):
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=WORLD_TZ)
-    return parsed
-
-
-def world_tick_due(runtime):
-    if runtime.get("status") != "running":
-        return False
-    interval = max(10, int(runtime.get("tick_interval_seconds", 60) or 60))
-    last = parse_runtime_time(runtime.get("last_tick_started_at") or runtime.get("last_tick_completed_at"))
-    if not last:
-        return True
-    return (get_world_now() - last).total_seconds() >= interval
-
-
 def world_runtime_auto_start_enabled():
-    return os.getenv("WORLD_RUNTIME_AUTO_START", "true").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
+    return environment_flag_enabled("WORLD_RUNTIME_AUTO_START")
 
 
 def world_runner_enabled():
     """Allow read-only app instances to run without a background world writer."""
-    return os.getenv("WORLD_RUNNER_ENABLED", "true").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
+    return environment_flag_enabled("WORLD_RUNNER_ENABLED")
 
 
 def ensure_world_runtime_running_unless_manually_paused(conn, runtime):
@@ -7668,23 +7523,16 @@ def ensure_world_runtime_running_unless_manually_paused(conn, runtime):
 
 
 def world_runner_loop():
-    while True:
-        try:
-            with get_connection() as conn:
-                stale_tick_ids = reconcile_stale_world_ticks(conn)
-                if stale_tick_ids:
-                    logger.warning("Recovered stale world ticks: %s", stale_tick_ids)
-                    conn.commit()
-                runtime = read_world_runtime(conn)
-                runtime = ensure_world_runtime_running_unless_manually_paused(conn, runtime)
-            if world_tick_due(runtime):
-                advance_world_tick(reason="background")
-        except HTTPException as exc:
-            if exc.status_code != 409:
-                logger.exception("World runner loop skipped one cycle")
-        except Exception as exc:
-            logger.exception("World runner loop skipped one cycle")
-        time.sleep(5)
+    run_world_runner_loop(
+        get_connection=get_connection,
+        reconcile_stale_ticks=reconcile_stale_world_ticks,
+        read_runtime=read_world_runtime,
+        ensure_runtime_running=ensure_world_runtime_running_unless_manually_paused,
+        tick_due=world_tick_due,
+        advance_tick=advance_world_tick,
+        http_exception_type=HTTPException,
+        logger=logger,
+    )
 
 
 @app.on_event("startup")
@@ -9186,7 +9034,6 @@ def activate_environment_config_api(
         return {"environment_config": config, "applied": applied, "event": event}
 
 
-@app.get("/api/world/snapshots")
 def list_world_snapshots(limit: int = 30):
     limit = max(1, min(limit, 200))
     with get_connection() as conn:
@@ -9197,7 +9044,6 @@ def list_world_snapshots(limit: int = 30):
         return {"snapshots": [decode_world_snapshot(row) for row in rows]}
 
 
-@app.get("/api/world/update-schedules")
 def list_world_update_schedules():
     with get_connection() as conn:
         rows = conn.execute(
@@ -9206,7 +9052,6 @@ def list_world_update_schedules():
         return {"update_schedules": [decode_world_update_schedule(row) for row in rows]}
 
 
-@app.get("/api/world/update-runs")
 def list_world_update_runs(update_key: str = "", status: str = "", limit: int = 50):
     limit = max(1, min(limit, 200))
     with get_connection() as conn:
@@ -9223,16 +9068,18 @@ def list_world_update_runs(update_key: str = "", status: str = "", limit: int = 
         return {"update_runs": [decode_world_update_run(row) for row in rows]}
 
 
-@app.get("/api/world/snapshots/{snapshot_id}")
 def get_world_snapshot_api(snapshot_id: int, include_state: bool = False):
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM world_snapshots WHERE id = ?",
-            (snapshot_id,),
-        ).fetchone()
-        if not row:
+        result = get_snapshot(conn, snapshot_id, include_state=include_state, decode_snapshot=decode_world_snapshot)
+        if result is None:
             raise HTTPException(status_code=404, detail="世界快照不存在")
-        return {"snapshot": decode_world_snapshot(row, include_state=include_state)}
+        return result
+
+
+app.state.list_world_snapshots = list_world_snapshots
+app.state.list_world_update_schedules = list_world_update_schedules
+app.state.list_world_update_runs = list_world_update_runs
+app.state.get_world_snapshot = get_world_snapshot_api
 
 
 @app.post("/api/admin/world/snapshots")
@@ -9243,34 +9090,14 @@ def create_world_snapshot_api(
     require_admin_token(authorization)
     with get_connection() as conn:
         try:
-            snapshot = create_world_snapshot_record(
+            return create_snapshot(
                 conn,
-                reason=payload.reason,
-                snapshot_type=payload.snapshot_type,
-                run_id=payload.run_id,
-                branch_key=payload.branch_key,
-                parent_snapshot_id=payload.parent_snapshot_id,
-                external_data_version=payload.external_data_version,
-                metadata=payload.metadata,
+                payload=payload,
+                create_record=create_world_snapshot_record,
+                append_event=append_world_event,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        event = append_world_event(
-            conn,
-            "world_snapshot_created",
-            "世界快照已创建",
-            f"已创建快照 #{snapshot['id']}，事件游标为 {snapshot['event_cursor']}。",
-            payload={
-                "snapshot_id": snapshot["id"],
-                "checksum": snapshot["checksum"],
-                "branch_key": snapshot["branch_key"],
-            },
-            source_type="snapshot",
-            source_id=snapshot["id"],
-            rule_version=snapshot["schema_version"],
-        )
-        conn.commit()
-        return {"snapshot": snapshot, "event": event}
 
 
 @app.post("/api/admin/world/snapshots/{snapshot_id}/restore")
@@ -9281,14 +9108,31 @@ def restore_world_snapshot_api(
 ):
     require_admin_token(authorization)
     with WorldTickExclusion(), get_connection() as conn:
+        try:
+            return restore_snapshot(
+                conn,
+                snapshot_id,
+                payload,
+                runtime_id=WORLD_RUNTIME_ID,
+                ensure_tables=ensure_world_runtime_tables,
+                create_record=create_world_snapshot_record,
+                restore_state=restore_world_snapshot_state,
+                append_event=append_world_event,
+            )
+        except ValueError as exc:
+            conn.rollback()
+            if "必须先暂停" in str(exc):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         ensure_world_runtime_tables(conn)
         runtime = conn.execute(
             "SELECT * FROM world_runtime WHERE id = ?",
             (WORLD_RUNTIME_ID,),
         ).fetchone()
-        if runtime["status"] != "paused":
-            raise HTTPException(status_code=409, detail="恢复快照前必须先暂停 world runtime")
-        active_branch_key = runtime["active_branch_key"] or "main"
+        try:
+            active_branch_key = require_paused_runtime(runtime)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         active_branch = conn.execute(
             "SELECT * FROM world_branches WHERE branch_key = ?",
             (active_branch_key,),
@@ -9352,10 +9196,7 @@ def restore_world_snapshot_api(
 @app.get("/api/world/branches")
 def list_world_branches():
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM world_branches ORDER BY id"
-        ).fetchall()
-        return {"branches": [decode_world_branch(row) for row in rows]}
+        return list_branches(conn, decode_branch=decode_world_branch)
 
 
 @app.post("/api/admin/world/branches")
@@ -9365,31 +9206,14 @@ def create_world_branch_api(
 ):
     require_admin_token(authorization)
     with get_connection() as conn:
-        ensure_world_runtime_tables(conn)
         try:
-            branch = create_world_branch_record(
+            return create_branch(
                 conn,
-                payload.branch_key,
-                payload.name,
-                payload.source_snapshot_id,
-                metadata=payload.metadata,
+                payload=payload,
+                ensure_tables=ensure_world_runtime_tables,
+                create_record=create_world_branch_record,
+                append_event=append_world_event,
             )
-            event = append_world_event(
-                conn,
-                "world_branch_created",
-                "隔离世界分支已创建",
-                f"已从快照 #{payload.source_snapshot_id} 创建分支 {payload.branch_key}。",
-                payload={
-                    "branch_key": payload.branch_key,
-                    "source_snapshot_id": payload.source_snapshot_id,
-                    "head_snapshot_id": branch["head_snapshot_id"],
-                },
-                source_type="world_branch",
-                source_id=branch["id"],
-                rule_version="world-branch-v1",
-            )
-            conn.commit()
-            return {"branch": branch, "event": event}
         except ValueError as exc:
             conn.rollback()
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -9403,14 +9227,31 @@ def switch_world_branch_api(
 ):
     require_admin_token(authorization)
     with WorldTickExclusion(), get_connection() as conn:
+        try:
+            return switch_branch(
+                conn,
+                branch_key,
+                payload,
+                runtime_id=WORLD_RUNTIME_ID,
+                ensure_tables=ensure_world_runtime_tables,
+                create_record=create_world_snapshot_record,
+                restore_state=restore_world_snapshot_state,
+                append_event=append_world_event,
+            )
+        except ValueError as exc:
+            conn.rollback()
+            if "必须先暂停" in str(exc) or "目标分支不存在" in str(exc):
+                raise HTTPException(status_code=409 if "暂停" in str(exc) else 404, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         ensure_world_runtime_tables(conn)
         runtime = conn.execute(
             "SELECT * FROM world_runtime WHERE id = ?",
             (WORLD_RUNTIME_ID,),
         ).fetchone()
-        if runtime["status"] != "paused":
-            raise HTTPException(status_code=409, detail="切换分支前必须先暂停 world runtime")
-        current_branch_key = runtime["active_branch_key"] or "main"
+        try:
+            current_branch_key = require_paused_runtime(runtime)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if branch_key == current_branch_key:
             return {"switched": False, "reason": "already_active", "branch_key": branch_key}
         target_branch = conn.execute(
@@ -9489,14 +9330,7 @@ def switch_world_branch_api(
 @app.get("/api/world/action-rules")
 def list_world_action_rules():
     with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM world_action_rules
-            WHERE status = 'active'
-            ORDER BY action_type
-            """
-        ).fetchall()
-        return {"action_rules": [decode_world_action_rule(row) for row in rows]}
+        return read_action_rules(conn, decode_action_rule=decode_world_action_rule)
 
 
 @app.get("/api/world/action-executions")
@@ -9505,87 +9339,38 @@ def list_world_action_executions(
     status: str = "",
     limit: int = 50,
 ):
-    limit = max(1, min(limit, 200))
     with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM world_action_executions
-            WHERE (? IS NULL OR resident_id = ?)
-              AND (? = '' OR status = ?)
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (resident_id, resident_id, status, status, limit),
-        ).fetchall()
-        items = []
-        for row in rows:
-            item = dict(row)
-            for key, fallback in (
-                ("precondition_results_json", []),
-                ("resources_before_json", {}),
-                ("resources_after_json", {}),
-                ("resource_costs_json", {}),
-                ("direct_effects_json", []),
-                ("delayed_effect_ids_json", []),
-            ):
-                item[key.removesuffix("_json")] = load_json_text(item.pop(key, ""), fallback)
-            items.append(item)
-        return {"action_executions": items}
+        return read_action_executions(
+            conn,
+            resident_id=resident_id,
+            status=status,
+            limit=limit,
+            load_json=load_json_text,
+        )
 
 
 @app.get("/api/world/delayed-effects")
 def list_world_delayed_effects(status: str = "", limit: int = 50):
-    limit = max(1, min(limit, 200))
     with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM world_delayed_effects
-            WHERE (? = '' OR status = ?)
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (status, status, limit),
-        ).fetchall()
-        items = []
-        for row in rows:
-            item = dict(row)
-            item["value"] = load_json_text(item.pop("value_json", ""), None)
-            items.append(item)
-        return {"delayed_effects": items}
+        return read_delayed_effects(
+            conn,
+            status=status,
+            limit=limit,
+            load_json=load_json_text,
+        )
 
 
 @app.get("/api/world/events")
 def get_world_events(after_id: int = 0, limit: int = 50, branch_key: str = ""):
-    limit = max(1, min(limit, 200))
     with get_connection() as conn:
-        selected_branch = branch_key or active_world_branch_key(conn)
-        if after_id <= 0:
-            rows = conn.execute(
-                """
-                SELECT * FROM world_event_stream
-                WHERE branch_key = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (selected_branch, limit),
-            ).fetchall()
-            rows = list(reversed(rows))
-        else:
-            rows = conn.execute(
-                """
-                SELECT * FROM world_event_stream
-                WHERE id > ? AND branch_key = ?
-                ORDER BY id ASC
-                LIMIT ?
-                """,
-                (after_id, selected_branch, limit),
-            ).fetchall()
-        events = [decode_world_event(row) for row in rows]
-        return {
-            "events": events,
-            "next_after_id": events[-1]["id"] if events else after_id,
-            "branch_key": selected_branch,
-        }
+        return read_world_events(
+            conn,
+            after_id=after_id,
+            limit=limit,
+            branch_key=branch_key,
+            active_branch_key=active_world_branch_key,
+            decode_world_event=decode_world_event,
+        )
 
 
 def current_metric_value(conn, metric_name, location=""):
@@ -9856,84 +9641,47 @@ def get_state():
         }
 
 
-@app.get("/api/world/observer-state")
 def get_world_observer_state():
     with get_connection() as conn:
-        day = get_current_day(conn)
-        runtime = read_world_runtime(conn)
-        branch_key = runtime.get("active_branch_key") or "main"
-        residents = conn.execute(
-            "SELECT id, name, role, location FROM residents ORDER BY id"
-        ).fetchall()
-        events = conn.execute(
-            """
-            SELECT * FROM world_event_stream
-            WHERE branch_key = ?
-            ORDER BY id DESC
-            LIMIT 20
-            """,
-            (branch_key,),
-        ).fetchall()
-        latest_tick = conn.execute(
-            "SELECT * FROM world_ticks ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        budget = {
-            "date": runtime["budget_date"],
-            "auto_model_calls_used": runtime["auto_model_calls_used"],
-            "daily_auto_model_budget": runtime["daily_auto_model_budget"],
-            "remaining_auto_model_calls": max(
-                0,
-                int(runtime["daily_auto_model_budget"])
-                - int(runtime["auto_model_calls_used"]),
-            ),
-        }
-        return {
-            "current_day": day,
-            "environment": get_campus_environment(conn, day),
-            "spaces": get_space_snapshot(conn, day),
-            "agents": rows_to_dicts(residents),
-            "events": list(reversed(rows_to_dicts(events))),
-            "runtime": {
-                "status": runtime["status"],
-                "world_time": runtime["world_time"],
-                "world_timezone": runtime["world_timezone"],
-                "tick_interval_seconds": runtime["tick_interval_seconds"],
-                "active_branch_key": branch_key,
-                "latest_tick": dict(latest_tick) if latest_tick else None,
-                "budget": budget,
-            },
-        }
+        return build_world_observer_state(
+            conn,
+            get_current_day=get_current_day,
+            read_world_runtime=read_world_runtime,
+            get_campus_environment=get_campus_environment,
+            get_space_snapshot=get_space_snapshot,
+            rows_to_dicts=rows_to_dicts,
+        )
 
 
-@app.get("/api/agents")
+app.state.get_world_observer_state = get_world_observer_state
+
+
 def get_agents():
     with get_connection() as conn:
         rows = conn.execute("SELECT * FROM residents ORDER BY id").fetchall()
         return rows_to_dicts(rows)
 
 
-@app.get("/api/residents")
 def get_residents():
     return get_agents()
 
 
 
-@app.get("/api/agents/modules")
 def get_agents_modules():
     with get_connection() as conn:
         return get_all_agent_module_states(conn)
 
 
-@app.get("/api/agents/{resident_id}/modules")
 def get_agent_modules(resident_id: int):
     with get_connection() as conn:
-        state = get_agent_module_state(conn, resident_id)
-        if not state:
-            raise HTTPException(status_code=404, detail="Agent 不存在")
-        return state
+        return get_agent_module_state(conn, resident_id)
 
 
-@app.get("/api/agents/{resident_id}/memories/relevant")
+app.state.list_agents = get_agents
+app.state.list_agent_modules = get_agents_modules
+app.state.get_agent_modules = get_agent_modules
+
+
 def get_relevant_agent_memories(resident_id: int, query: str = ""):
     with get_connection() as conn:
         if not get_resident(conn, resident_id):
@@ -9946,7 +9694,6 @@ def get_relevant_agent_memories(resident_id: int, query: str = ""):
         }
 
 
-@app.get("/api/agents/{resident_id}/memories")
 def get_agent_memories(resident_id: int, limit: int = 20, offset: int = 0):
     with get_connection() as conn:
         if not get_resident(conn, resident_id):
@@ -9980,7 +9727,10 @@ def get_agent_memories(resident_id: int, limit: int = 20, offset: int = 0):
             "memories": memories,
         }
 
-@app.get("/api/inventory")
+
+app.state.get_relevant_agent_memories = get_relevant_agent_memories
+app.state.get_agent_memories = get_agent_memories
+
 def get_inventory():
     with get_connection() as conn:
         rows = conn.execute(
@@ -9994,16 +9744,19 @@ def get_inventory():
         return rows_to_dicts(rows)
 
 
-@app.get("/api/campus/environment/today")
 def get_today_environment():
     with get_connection() as conn:
         return get_campus_environment(conn)
 
 
-@app.get("/api/campus/spaces")
 def get_campus_spaces():
     with get_connection() as conn:
         return get_space_snapshot(conn)
+
+
+app.state.get_inventory = get_inventory
+app.state.get_today_environment = get_today_environment
+app.state.get_campus_spaces = get_campus_spaces
 
 
 @app.post("/api/campus/spaces/{location}/status")
@@ -10105,39 +9858,17 @@ def set_today_environment(payload: CampusEnvironmentRequest):
 @app.get("/api/social/hierarchy")
 def get_social_hierarchy():
     with get_connection() as conn:
-        ensure_social_system_tables(conn)
-        rows = conn.execute(
-            """
-            SELECT residents.id, residents.name, residents.role,
-                   agent_profiles.organization, agent_profiles.hierarchy_level
-            FROM residents
-            JOIN agent_profiles ON agent_profiles.resident_id = residents.id
-            ORDER BY agent_profiles.hierarchy_level DESC, residents.id
-            """
-        ).fetchall()
-        levels = {}
-        for row in rows:
-            level = int(row["hierarchy_level"])
-            levels.setdefault(str(level), {"title": get_hierarchy_title(level), "agents": []})
-            levels[str(level)]["agents"].append(dict(row))
-        return {"levels": levels}
+        return build_social_hierarchy(
+            conn,
+            ensure_tables=ensure_social_system_tables,
+            get_hierarchy_title=get_hierarchy_title,
+        )
 
 
 @app.get("/api/agents/{resident_id}/learning")
 def get_agent_learning(resident_id: int):
     with get_connection() as conn:
-        ensure_social_system_tables(conn)
-        rows = conn.execute(
-            """
-            SELECT day, action, outcome, score_delta, lesson, created_at
-            FROM agent_learning
-            WHERE resident_id = ?
-            ORDER BY id DESC
-            LIMIT 30
-            """,
-            (resident_id,),
-        ).fetchall()
-        return {"resident_id": resident_id, "learning": rows_to_dicts(rows)}
+        return list_agent_learning(conn, resident_id, ensure_tables=ensure_social_system_tables, rows_to_dicts=rows_to_dicts)
 
 
 @app.post("/api/social/communicate")
@@ -10174,12 +9905,7 @@ def get_long_term_goals(resident_id: int):
     with get_connection() as conn:
         if not get_resident(conn, resident_id):
             raise HTTPException(status_code=404, detail="Agent 不存在")
-        ensure_social_system_tables(conn)
-        rows = conn.execute(
-            "SELECT * FROM long_term_goals WHERE resident_id = ? ORDER BY status, deadline_day, id",
-            (resident_id,),
-        ).fetchall()
-        return rows_to_dicts(rows)
+        return list_long_term_goals(conn, resident_id, ensure_tables=ensure_social_system_tables, rows_to_dicts=rows_to_dicts)
 
 
 @app.get("/api/agents/{resident_id}/goal-system")
@@ -10188,6 +9914,14 @@ def get_agent_goal_system(resident_id: int):
         resident = get_resident(conn, resident_id)
         if not resident:
             raise HTTPException(status_code=404, detail="Agent 不存在")
+        return build_goal_system(
+            conn,
+            resident_id,
+            resident=resident,
+            ensure_tables=ensure_social_system_tables,
+            rows_to_dicts=rows_to_dicts,
+            load_json=load_json_text,
+        )
         ensure_social_system_tables(conn)
         profile = conn.execute(
             "SELECT strategy, energy, mood, current_task FROM agent_profiles WHERE resident_id = ?",
@@ -10333,22 +10067,7 @@ def get_social_relationships(resident_id: int):
     with get_connection() as conn:
         if not get_resident(conn, resident_id):
             raise HTTPException(status_code=404, detail="Agent 不存在")
-        ensure_social_system_tables(conn)
-        rows = conn.execute(
-            """
-            SELECT relationships.to_resident_id, residents.name, residents.role, relationships.score, relationships.notes
-            FROM relationships JOIN residents ON residents.id = relationships.to_resident_id
-            WHERE relationships.from_resident_id = ?
-            ORDER BY relationships.score DESC
-            """,
-            (resident_id,),
-        ).fetchall()
-        relationships = []
-        for row in rows:
-            item = dict(row)
-            item["dynamics"] = get_relationship_dynamics(conn, resident_id, item["to_resident_id"])
-            relationships.append(item)
-        return relationships
+        return list_relationships(conn, resident_id, ensure_tables=ensure_social_system_tables, get_relationship_dynamics=get_relationship_dynamics)
 
 
 def _life_course_action_label(action):
@@ -10879,43 +10598,31 @@ def _build_life_course_overview(conn, resident_id, from_day=None, to_day=None, l
 @app.get("/api/agents/{resident_id}/life-course/overview")
 def get_agent_life_course_overview(resident_id: int, from_day: Optional[int] = None, to_day: Optional[int] = None, limit: int = 240):
     with get_connection() as conn:
-        return _build_life_course_overview(conn, resident_id, from_day=from_day, to_day=to_day, limit=limit)
+        return lifecycle_overview(conn, resident_id, build_overview=_build_life_course_overview, from_day=from_day, to_day=to_day, limit=limit)
 
 
 @app.get("/api/agents/{resident_id}/life-course/events")
 def get_agent_life_course_events(resident_id: int, from_day: Optional[int] = None, to_day: Optional[int] = None, limit: int = 240):
     with get_connection() as conn:
-        overview = _build_life_course_overview(conn, resident_id, from_day=from_day, to_day=to_day, limit=limit)
-        return {"analysis_version": overview["analysis_version"], "events": overview["timeline"], "research_boundaries": overview["research_boundaries"]}
+        return lifecycle_events(conn, resident_id, build_overview=_build_life_course_overview, from_day=from_day, to_day=to_day, limit=limit)
 
 
 @app.get("/api/agents/{resident_id}/life-course/turning-points")
 def get_agent_life_course_turning_points(resident_id: int, limit: int = 12):
     with get_connection() as conn:
-        overview = _build_life_course_overview(conn, resident_id, limit=500)
-        return {"analysis_version": overview["analysis_version"], "turning_points": overview["turning_points"][:min(max(limit, 1), 30)]}
+        return lifecycle_turning_points(conn, resident_id, build_overview=_build_life_course_overview, limit=limit)
 
 
 @app.get("/api/agents/{resident_id}/life-course/relationships")
 def get_agent_life_course_relationships(resident_id: int):
     with get_connection() as conn:
-        overview = _build_life_course_overview(conn, resident_id, limit=240)
-        return {
-            "analysis_version": overview["analysis_version"],
-            "relationships": overview["relationships"],
-            "history_available": overview["research_boundaries"]["relationship_history_available"],
-        }
+        return lifecycle_relationships(conn, resident_id, build_overview=_build_life_course_overview)
 
 
 @app.get("/api/agents/{resident_id}/life-course/groups")
 def get_agent_life_course_groups(resident_id: int):
     with get_connection() as conn:
-        overview = _build_life_course_overview(conn, resident_id, limit=240)
-        return {
-            "analysis_version": overview["analysis_version"],
-            "groups": overview["groups"],
-            "membership_history_available": overview["research_boundaries"]["group_membership_history_available"],
-        }
+        return lifecycle_groups(conn, resident_id, build_overview=_build_life_course_overview)
 
 
 def build_agent_social_graph(conn, resident_id, limit=10):
@@ -11029,27 +10736,7 @@ def get_agent_timeline(resident_id: int, limit: int = 30, offset: int = 0):
 
 
 def fetch_agent_simulation_logs(conn, resident_id, limit=12):
-    rows = conn.execute(
-        """
-        SELECT day, perception, retrieved_memories, decision, execution, environment_feedback, created_at
-        FROM simulation_action_logs
-        WHERE resident_id = ?
-        ORDER BY id DESC LIMIT ?
-        """,
-        (resident_id, min(max(limit, 1), 50)),
-    ).fetchall()
-    return [
-        {
-            "day": row["day"],
-            "perception": load_json_text(row["perception"], {}),
-            "retrieved_memories": load_json_text(row["retrieved_memories"], []),
-            "decision": load_json_text(row["decision"], {}),
-            "execution": load_json_text(row["execution"], {}),
-            "environment_feedback": load_json_text(row["environment_feedback"], {}),
-            "created_at": row["created_at"],
-        }
-        for row in rows
-    ]
+    return fetch_simulation_logs(conn, resident_id, limit=limit, load_json=load_json_text)
 
 
 @app.get("/api/agents/{resident_id}/simulation-logs")
@@ -11066,49 +10753,27 @@ def get_agent_profile_activity(resident_id: int, timeline_limit: int = 20):
     with get_connection() as conn:
         if not get_resident(conn, resident_id):
             raise HTTPException(status_code=404, detail="Agent 不存在")
-        ensure_social_system_tables(conn)
-        page_size = min(max(timeline_limit, 1), 40)
-        timeline_rows = fetch_agent_timeline(conn, resident_id, limit=page_size + 1, offset=0)
-        latest_logs = fetch_agent_simulation_logs(conn, resident_id, limit=1)
-        return {
-            "social_graph": build_agent_social_graph(conn, resident_id, limit=10),
-            "timeline": timeline_rows[:page_size],
-            "timeline_has_more": len(timeline_rows) > page_size,
-            "latest_simulation_log": latest_logs[0] if latest_logs else None,
-        }
+        return build_profile_activity(
+            conn,
+            resident_id,
+            ensure_tables=ensure_social_system_tables,
+            fetch_timeline=fetch_agent_timeline,
+            fetch_logs=fetch_agent_simulation_logs,
+            build_social_graph=build_agent_social_graph,
+            timeline_limit=timeline_limit,
+        )
 
 
 @app.get("/api/organizations")
 def get_campus_organizations():
     with get_connection() as conn:
-        ensure_social_system_tables(conn)
-        rows = conn.execute(
-            """
-            SELECT campus_organizations.*,
-                   COUNT(organization_members.resident_id) AS active_members
-            FROM campus_organizations
-            LEFT JOIN organization_members
-              ON organization_members.organization_id = campus_organizations.id
-             AND organization_members.status = 'active'
-            GROUP BY campus_organizations.id
-            ORDER BY campus_organizations.organization_type, campus_organizations.id
-            """
-        ).fetchall()
-        organizations = []
-        for row in rows:
-            item = dict(row)
-            item["resources"] = load_json_text(item["resources"], {})
-            item["schedule"] = load_json_text(item["schedule"], [])
-            organizations.append(item)
-        return organizations
+        return list_organizations(conn, ensure_tables=ensure_social_system_tables, load_json=load_json_text)
 
 
 @app.get("/api/groups")
 def get_group_goals():
     with get_connection() as conn:
-        ensure_social_system_tables(conn)
-        rows = conn.execute("SELECT * FROM group_goals ORDER BY status, deadline_day, id DESC").fetchall()
-        return rows_to_dicts(rows)
+        return list_group_goals(conn, ensure_tables=ensure_social_system_tables, rows_to_dicts=rows_to_dicts)
 
 
 @app.post("/api/groups")
