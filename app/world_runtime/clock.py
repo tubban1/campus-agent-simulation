@@ -1,6 +1,8 @@
 """World-clock and tick-scheduling primitives."""
 
 from datetime import datetime, timedelta, timezone
+import os
+import re
 
 
 WORLD_TIMEZONE = "Asia/Shanghai"
@@ -15,6 +17,14 @@ def parse_world_datetime(value):
     if not value:
         return None
     text = str(value).strip().replace("Z", "+00:00")
+    offset = re.search(r"([+-]\d{2})(?::?(\d{2}))?$", text)
+    if offset:
+        text = f"{text[:offset.start()]}{offset.group(1)}:{offset.group(2) or '00'}"
+    text = re.sub(
+        r"\.(\d+)(?=[+-]\d{2}:\d{2}$|$)",
+        lambda match: "." + match.group(1)[:6].ljust(6, "0"),
+        text,
+    )
     candidates = [text, text.replace(" ", "T")]
     for candidate in candidates:
         try:
@@ -48,22 +58,26 @@ def previous_completed_world_window(world_time, window_seconds):
 
 
 def parse_runtime_time(value):
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=WORLD_TZ)
-    return parsed.astimezone(WORLD_TZ)
+    return parse_world_datetime(value)
 
 
 def world_tick_due(runtime, now=None):
     if runtime.get("status") != "running":
         return False
+    current = now or get_world_now()
     interval = max(10, int(runtime.get("tick_interval_seconds", 60) or 60))
+    # Deep-night ticks still advance body recovery and the environment, but
+    # should not spend a full daytime decision budget every minute.
+    if 0 <= current.hour < 6:
+        try:
+            night_interval = int(
+                runtime.get("night_tick_interval_seconds")
+                or os.getenv("WORLD_NIGHT_TICK_INTERVAL_SECONDS", "900")
+            )
+        except (TypeError, ValueError):
+            night_interval = 900
+        interval = max(interval, max(60, night_interval))
     last = parse_runtime_time(runtime.get("last_tick_started_at") or runtime.get("last_tick_completed_at"))
     if not last:
         return True
-    return ((now or get_world_now()) - last).total_seconds() >= interval
+    return (current - last).total_seconds() >= interval

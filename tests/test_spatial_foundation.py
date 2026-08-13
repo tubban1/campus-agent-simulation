@@ -35,6 +35,7 @@ from app.spatial.repository import SpatialRepository
 from app.spatial.planner import RouteNotFoundError
 from app.spatial.runtime import (
     SpatialAdmissionError,
+    _reachable_destination_route,
     advance_active_movements,
     check_action_resource,
     pause_spatial_movement,
@@ -502,16 +503,22 @@ class SpatialFoundationTest(unittest.TestCase):
             """
             UPDATE agent_body_states
             SET hunger = 86, fatigue = 82, sleep_debt = 60,
-                stress = 70, attention = 20
+                stress = 70, attention = 20, hydration = 82, nutrition = 22,
+                activity_load = 76, illness_load = 12
             WHERE resident_id = 1
             """
         )
         meal = apply_action_body_effects(connection, 1, "consume")
         rest = apply_action_body_effects(connection, 1, "rest")
         self.assertLess(meal["after"]["hunger"], meal["before"]["hunger"])
+        self.assertGreater(meal["after"]["health"], meal["before"]["health"])
+        self.assertLess(meal["after"]["hydration"], meal["before"]["hydration"])
+        self.assertGreater(meal["after"]["nutrition"], meal["before"]["nutrition"])
         self.assertLess(rest["after"]["fatigue"], rest["before"]["fatigue"])
         self.assertLess(rest["after"]["stress"], rest["before"]["stress"])
         self.assertGreater(rest["after"]["attention"], rest["before"]["attention"])
+        self.assertGreater(rest["after"]["health"], rest["before"]["health"])
+        self.assertLess(rest["after"]["activity_load"], rest["before"]["activity_load"])
         connection.close()
 
     def test_body_preconditions_allow_recovery_movement_when_exhausted(self):
@@ -586,6 +593,17 @@ class SpatialFoundationTest(unittest.TestCase):
         with self.assertRaises(RouteNotFoundError):
             preview_route(connection, 2, "图书馆")
         connection.close()
+
+    def test_food_alias_prefers_reachable_real_building_over_isolated_duplicate(self):
+        nodes = [
+            {"id": 1, "code": "origin", "name": "清晏楼(食堂/报告厅)", "node_type": "path_point", "status": "open", "world_key": "tsinghua_main", "properties": {}},
+            {"id": 2, "code": "reachable_canteen", "name": "清晏楼食堂", "node_type": "building", "status": "open", "world_key": "tsinghua_main", "properties": {}},
+            {"id": 99, "code": "isolated_canteen", "name": "紫荆园食堂", "node_type": "building", "status": "open", "world_key": "tsinghua_main", "properties": {}},
+        ]
+        edges = [{"id": 1, "from_node_id": 1, "to_node_id": 2, "distance_meters": 20.0, "bidirectional": True, "status": "open", "congestion_factor": 1.0, "weather_factor": 1.0, "properties": {}}]
+        target, route = _reachable_destination_route(nodes, edges, 1, "食堂", "tsinghua_main", 78.0, {})
+        self.assertEqual(target["id"], 2)
+        self.assertEqual(route["node_ids"], [1, 2])
 
     def test_continuous_movement_updates_coordinates_before_legacy_location(self):
         started_at = datetime(2026, 7, 29, 8, 0, tzinfo=timezone.utc)

@@ -4,6 +4,7 @@ import json
 import hashlib
 from app.json_utils import json_dumps
 from datetime import datetime, timezone
+from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
 
 
 RULE_SEEDS = (
@@ -56,12 +57,14 @@ def _clamp(value, low=0.0, high=1.0):
 
 
 def _now(value=None):
-    parsed = value or datetime.now(timezone.utc)
-    if isinstance(parsed, str):
-        parsed = datetime.fromisoformat(parsed.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+    if value is None:
+        return datetime.now(WORLD_TZ)
+    if isinstance(value, datetime):
+        return value.astimezone(WORLD_TZ) if value.tzinfo else value.replace(tzinfo=WORLD_TZ)
+    parsed = parse_world_datetime(value)
+    if parsed:
+        return parsed
+    raise ValueError(f"无法解析的时间格式: {value}")
 
 
 def _table_exists(conn, table_name):

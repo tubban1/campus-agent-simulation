@@ -24,9 +24,15 @@ spatial_nodes = Table(
     Column("name", String(120), nullable=False),
     Column("node_type", String(32), nullable=False),
     Column("parent_id", ForeignKey("spatial_nodes.id", ondelete="SET NULL")),
+    Column("world_key", String(64), nullable=False, default="default", index=True),
     Column("x", Float, nullable=False),
     Column("y", Float, nullable=False, default=0),
     Column("z", Float, nullable=False),
+    Column("longitude", Float, nullable=True),
+    Column("latitude", Float, nullable=True),
+    Column("elevation_m", Float, nullable=False, default=0.0),
+    Column("geometry_json", JSON, nullable=True),
+    Column("source_element_id", String(120), nullable=True),
     Column("radius", Float, nullable=False),
     Column("capacity", Integer, nullable=False, default=0),
     Column("status", String(32), nullable=False, default="open"),
@@ -41,6 +47,29 @@ spatial_nodes = Table(
     CheckConstraint("capacity >= 0", name="spatial_nodes_capacity_nonnegative"),
     CheckConstraint("radius > 0", name="spatial_nodes_radius_positive"),
     CheckConstraint("parent_id IS NULL OR parent_id <> id", name="spatial_nodes_parent_not_self"),
+)
+
+spatial_import_batches = Table(
+    "spatial_import_batches",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("batch_key", String(80), nullable=False, unique=True),
+    Column("world_key", String(64), nullable=False, index=True),
+    Column("source", String(120), nullable=False),
+    Column("license", String(120), nullable=False),
+    Column("original_crs", String(32), nullable=False, default="EPSG:4326"),
+    Column("projection_meta", JSON, nullable=False),
+    Column("nodes_count", Integer, nullable=False, default=0),
+    Column("edges_count", Integer, nullable=False, default=0),
+    Column("features_count", Integer, nullable=False, default=0),
+    Column("quality_meta", JSON, nullable=False),
+    Column("imported_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
 )
 
 spatial_edges = Table(
@@ -296,6 +325,10 @@ agent_body_states = Table(
     Column("social_energy", Float, nullable=False),
     Column("health", Float, nullable=False),
     Column("weather_exposure", Float, nullable=False),
+    Column("hydration", Float, nullable=False, default=25.0),
+    Column("nutrition", Float, nullable=False, default=78.0),
+    Column("activity_load", Float, nullable=False, default=18.0),
+    Column("illness_load", Float, nullable=False, default=0.0),
     Column("last_updated_at", DateTime(timezone=True)),
     Column("last_updated_tick", Integer, nullable=False, default=0),
     Column("source", String(64), nullable=False, default="seeded"),
@@ -333,4 +366,58 @@ agent_body_states = Table(
         "last_updated_tick >= 0", name="agent_body_states_tick_nonnegative"
     ),
     CheckConstraint("version > 0", name="agent_body_states_version_positive"),
+)
+
+
+spatial_affordances = Table(
+    "spatial_affordances",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("world_key", String(64), nullable=False, default="default", index=True),
+    Column(
+        "node_id",
+        ForeignKey("spatial_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("affordance_key", String(64), nullable=False),
+    Column("name", String(120), nullable=False),
+    Column("requirements", JSON, nullable=False),
+    Column("effects", JSON, nullable=False),
+    Column("capacity", Integer, nullable=False, default=0),
+    Column("status", String(32), nullable=False, default="open"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+    UniqueConstraint("node_id", "affordance_key", name="uq_spatial_affordance_node_key"),
+    CheckConstraint("capacity >= 0", name="spatial_affordances_capacity_nonnegative"),
+)
+
+agent_action_plans = Table(
+    "agent_action_plans",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column(
+        "resident_id",
+        ForeignKey("residents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    ),
+    Column("goal_id", Integer, nullable=True),
+    Column("status", String(32), nullable=False, default="planning"),
+    Column("target_affordance_key", String(64), nullable=False, default=""),
+    Column("target_node_id", Integer, nullable=True),
+    Column("current_step_index", Integer, nullable=False, default=0),
+    Column("steps_json", JSON, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+    CheckConstraint("current_step_index >= 0", name="agent_action_plans_step_index_nonnegative"),
 )

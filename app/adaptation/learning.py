@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from app.json_utils import json_dumps
 from datetime import datetime, timezone
+from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
 
 
 def _json(value):
@@ -316,7 +317,12 @@ def _ingest_legacy_memories(conn, branch_key, tick_number, world_time, resident_
 
 
 def decay_adaptive_memories(conn, world_time=None):
-    now = world_time or datetime.now(timezone.utc)
+    if world_time is None:
+        now = datetime.now(WORLD_TZ)
+    elif isinstance(world_time, datetime):
+        now = world_time.astimezone(WORLD_TZ) if world_time.tzinfo else world_time.replace(tzinfo=WORLD_TZ)
+    else:
+        now = parse_world_datetime(world_time) or datetime.now(WORLD_TZ)
     rows = conn.execute(
         """
         SELECT * FROM adaptive_memories
@@ -326,11 +332,8 @@ def decay_adaptive_memories(conn, world_time=None):
     weakened = 0
     forgotten = 0
     for row in rows:
-        try:
-            reinforced = datetime.fromisoformat(row["last_reinforced_at"])
-            if reinforced.tzinfo is None:
-                reinforced = reinforced.replace(tzinfo=timezone.utc)
-        except (TypeError, ValueError):
+        reinforced = parse_world_datetime(row["last_reinforced_at"])
+        if not reinforced:
             continue
         age_days = max(0.0, (now - reinforced).total_seconds() / 86400)
         if age_days < 1:

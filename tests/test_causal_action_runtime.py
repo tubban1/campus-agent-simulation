@@ -7,6 +7,8 @@ import app.main as main
 from app.economy.schema import ECONOMY_FOUNDATION_SQL
 from app.economy.service import seed_economy_foundation
 from app.models import SCHEMA_SQL
+from app.supply.schema import SUPPLY_FOUNDATION_SQL
+from app.supply.service import seed_supply_foundation
 
 
 class CausalActionRuntimeTest(unittest.TestCase):
@@ -280,6 +282,70 @@ class CausalActionRuntimeTest(unittest.TestCase):
         self.assertEqual(action["failure_code"], "insufficient_energy")
         self.assertEqual(settlement["before"], settlement["after"])
         self.assertEqual(stored["status"], "rejected")
+
+    def test_critical_hunger_uses_campus_meal_when_food_stock_is_empty(self):
+        self.conn.execute(
+            """
+            INSERT INTO residents
+            (id, name, role, personality, goal, money, location)
+            VALUES (5, '食堂经营者', '食堂商家', '稳定', '保障餐食供应', 100, '食堂')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO residents
+            (id, name, role, personality, goal, money, location)
+            VALUES (6, '饮品经营者', '奶茶店商家', '稳定', '保障饮品供应', 100, '商业街')
+            """
+        )
+        seed_economy_foundation(self.conn)
+        self.conn.executescript(SUPPLY_FOUNDATION_SQL)
+        seed_supply_foundation(self.conn)
+        self.conn.execute(
+            """
+            CREATE TABLE agent_body_states (
+                resident_id INTEGER PRIMARY KEY,
+                hunger REAL NOT NULL,
+                fatigue REAL NOT NULL,
+                sleep_debt REAL NOT NULL,
+                stress REAL NOT NULL,
+                attention REAL NOT NULL,
+                social_energy REAL NOT NULL,
+                health REAL NOT NULL,
+                weather_exposure REAL NOT NULL,
+                last_updated_at TEXT,
+                last_updated_tick INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'test',
+                version INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO agent_body_states
+            (resident_id, hunger, fatigue, sleep_debt, stress, attention,
+             social_energy, health, weather_exposure)
+            VALUES (1, 96, 30, 20, 20, 60, 60, 80, 0)
+            """
+        )
+        self.conn.execute(
+            """
+            UPDATE inventory_accounts SET quantity_on_hand = 0
+            WHERE owner_actor_key = 'resident:5'
+              AND item_id = (SELECT id FROM catalog_items WHERE name = '套餐饭')
+            """
+        )
+
+        action = main.begin_world_action_execution(
+            self.conn, 1, "consume", "食堂", self.world_time, tick_id=12
+        )
+        settlement = main.settle_world_action_resources(self.conn, action, success=True)
+
+        self.assertEqual(action["status"], "pending")
+        self.assertIn("emergency_nutrition", action["resources_before"])
+        self.assertEqual(settlement["costs"]["money"], 0)
+        self.assertEqual(settlement["costs"]["energy"], 0)
 
     def test_passive_runtime_poll_does_not_consume_daily_resources(self):
         self.conn.execute(

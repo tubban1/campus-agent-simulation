@@ -34,15 +34,19 @@ CONTRACT_DEFAULTS = (
 )
 
 
+from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
+
+
 def _json(value) -> str:
     return json_dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 def _now(value=None) -> datetime:
     if value is None:
-        return datetime.now(timezone.utc)
-    result = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
-    return result if result.tzinfo else result.replace(tzinfo=timezone.utc)
+        return datetime.now(WORLD_TZ)
+    if isinstance(value, datetime):
+        return value.astimezone(WORLD_TZ) if value.tzinfo else value.replace(tzinfo=WORLD_TZ)
+    return parse_world_datetime(value) or datetime.now(WORLD_TZ)
 
 
 def labor_runtime_available(conn) -> bool:
@@ -136,7 +140,7 @@ def _runtime_world_date(conn) -> date:
         ).fetchone()
         if row and row["world_time"]:
             return _now(row["world_time"]).date()
-    return datetime.now(timezone.utc).date()
+    return _now().date()
 
 
 def seed_labor_runtime(conn, world_date: Optional[date] = None) -> dict:

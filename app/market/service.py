@@ -18,15 +18,19 @@ from app.supply.service import settle_goods_trade
 RULE_VERSION = "market-pricing-v1"
 
 
+from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
+
+
 def _json(value) -> str:
     return json_dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 def _now(value=None) -> datetime:
     if value is None:
-        return datetime.now(timezone.utc)
-    result = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
-    return result if result.tzinfo else result.replace(tzinfo=timezone.utc)
+        return datetime.now(WORLD_TZ)
+    if isinstance(value, datetime):
+        return value.astimezone(WORLD_TZ) if value.tzinfo else value.replace(tzinfo=WORLD_TZ)
+    return parse_world_datetime(value) or datetime.now(WORLD_TZ)
 
 
 def _clamp(value, low, high):
@@ -178,21 +182,21 @@ def _mechanism_supply(conn, mechanism, now: datetime) -> tuple[int, int]:
         return max(0, int(offering["capacity_per_hour"]) - int(used)), int(offering["capacity_per_hour"])
     account = conn.execute(
         """
-        SELECT quantity_on_hand, quantity_reserved, target_stock
+        SELECT COALESCE(SUM(quantity_on_hand - quantity_reserved), 0) AS available_supply,
+               COALESCE(MAX(target_stock), 0) AS target_stock
         FROM inventory_accounts
         WHERE owner_actor_key = ? AND item_id = ? AND location = ?
           AND status = 'active'
-        LIMIT 1
         """,
         (
             mechanism["provider_actor_key"], mechanism["item_id"],
             mechanism["location"],
         ),
     ).fetchone()
-    if not account:
+    if not account or account["available_supply"] is None:
         return 0, int(mechanism["target_supply"])
     return (
-        max(0, int(account["quantity_on_hand"]) - int(account["quantity_reserved"])),
+        max(0, int(account["available_supply"])),
         max(1, int(account["target_stock"] or mechanism["target_supply"])),
     )
 
@@ -231,10 +235,6 @@ def quote_market_offer(conn, mechanism_id: int, world_time=None) -> dict:
     now = _now(world_time)
     hour = now.replace(minute=0, second=0, microsecond=0)
     quote_key = f"quote:{mechanism_id}:{hour.isoformat()}"
-    existing = conn.execute(
-        "SELECT * FROM market_price_snapshots WHERE quote_key = ?",
-        (quote_key,),
-    ).fetchone()
     mechanism = conn.execute(
         """
         SELECT mechanism.*, item.name AS item_name, item.item_type
@@ -246,8 +246,15 @@ def quote_market_offer(conn, mechanism_id: int, world_time=None) -> dict:
     ).fetchone()
     if not mechanism:
         raise ValueError("市场机制不存在或已暂停")
+    existing = conn.execute(
+        "SELECT * FROM market_price_snapshots WHERE quote_key = ?",
+        (quote_key,),
+    ).fetchone()
     if existing:
-        return {**dict(existing), "mechanism": dict(mechanism)}
+        available, _ = _mechanism_supply(conn, mechanism, now)
+        if int(existing["available_supply"]) == available:
+            return {**dict(existing), "mechanism": dict(mechanism)}
+        conn.execute("DELETE FROM market_price_snapshots WHERE id = ?", (existing["id"],))
     available, target_supply = _mechanism_supply(conn, mechanism, now)
     observed, fulfilled = _recent_demand(conn, mechanism_id, now)
     inventory_pressure = int(

@@ -12,9 +12,15 @@ class SpatialNodeResponse(BaseModel):
     name: str
     node_type: str
     parent_id: Optional[int] = None
+    world_key: str = "default"
     x: float
     y: float
     z: float
+    longitude: Optional[float] = None
+    latitude: Optional[float] = None
+    elevation_m: float = 0.0
+    geometry_json: Optional[dict[str, Any]] = None
+    source_element_id: Optional[str] = None
     radius: float
     capacity: int
     status: str
@@ -42,8 +48,28 @@ class SceneGraphResponse(BaseModel):
     coordinate_system: str
     schema_version: int
     topology_version: str
+    world_key: str = "default"
+    bounds: Optional[dict[str, float]] = None
+    wgs84_bounds: Optional[list[float]] = None
     nodes: list[SpatialNodeResponse]
     edges: list[SpatialEdgeResponse]
+
+
+class SpatialWorldItemResponse(BaseModel):
+    world_key: str
+    name: str
+    node_count: int
+    edge_count: int
+    is_real_world: bool = False
+    metric_bounds: Optional[list[float]] = None
+    wgs84_bounds: Optional[list[float]] = None
+    source: Optional[str] = None
+    license: Optional[str] = None
+    imported_at: Optional[str] = None
+
+
+class SpatialWorldsResponse(BaseModel):
+    worlds: list[SpatialWorldItemResponse]
 
 
 class OccupancyItemResponse(BaseModel):
@@ -120,6 +146,8 @@ class AgentSpatialStateResponse(BaseModel):
     x: float
     y: float
     z: float
+    longitude: Optional[float] = None
+    latitude: Optional[float] = None
     facing_x: float
     facing_z: float
     movement_status: str
@@ -141,6 +169,8 @@ class AgentSpatialStateResponse(BaseModel):
     updated_at: datetime
     current_node_code: str
     current_node_name: str
+    origin_node_code: Optional[str] = None
+    origin_node_name: Optional[str] = None
     target_node_code: Optional[str] = None
     target_node_name: Optional[str] = None
     capability: SpatialCapabilityResponse
@@ -179,4 +209,58 @@ class RoutePlanRequest(BaseModel):
 
 
 class MovementControlRequest(BaseModel):
-    reason: str = Field(default="manual_pause", max_length=240)
+    reason: str = Field(default="manual_pause", min_length=1, max_length=120)
+
+
+class SetDestinationRequest(BaseModel):
+    destination: str = Field(min_length=1, max_length=120)
+    constraint_response: str = Field(default="auto")
+
+
+class CreateSpatialEventRequest(BaseModel):
+    world_key: str = Field(min_length=1, max_length=80)
+    longitude: float
+    latitude: float
+    event_type: str = Field(default="physical_environment_change")
+    title: str = Field(min_length=1, max_length=150)
+    description: Optional[str] = None
+
+
+class SpatialAffordanceResponse(BaseModel):
+    id: int
+    world_key: str
+    node_id: int
+    node_name: str
+    affordance_key: str
+    name: str
+    requirements: dict[str, Any]
+    effects: dict[str, Any]
+    capacity: int
+    status: str
+
+
+class SpatialAffordancesResponse(BaseModel):
+    affordances: list[SpatialAffordanceResponse]
+
+
+class AgentActionStep(BaseModel):
+    action: str
+    target_node_id: Optional[int] = None
+    target_node_name: Optional[str] = None
+    goal: Optional[str] = None
+    expected_cost: dict[str, Any] = Field(default_factory=dict)
+    preconditions: list[str] = Field(default_factory=list)
+    fallback: Optional[str] = None
+
+
+class AgentActionPlanResponse(BaseModel):
+    id: int
+    resident_id: int
+    goal_id: Optional[int] = None
+    status: str
+    target_affordance_key: str
+    target_node_id: Optional[int] = None
+    current_step_index: int
+    steps: list[AgentActionStep]
+    created_at: datetime
+    updated_at: datetime

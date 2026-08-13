@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 import sqlite3
 import os
 import re
@@ -76,6 +76,8 @@ POSTGRES_ID_TABLES = {
     "longitudinal_aggregations", "trajectory_reconciliations",
 }
 
+POSTGRES_TABLE_COLUMNS_CACHE = {}
+
 
 def using_postgres() -> bool:
     return bool(os.getenv("DATABASE_URL"))
@@ -138,6 +140,19 @@ class PostgresCursor:
         return self._cursor.fetchall()
 
 
+class CachedPostgresCursor:
+    def __init__(self, rows):
+        self._rows = list(rows)
+        self.lastrowid = None
+        self.rowcount = len(self._rows)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+
 class PostgresConnection:
     def __init__(self, connection):
         self._connection = connection
@@ -152,13 +167,21 @@ class PostgresConnection:
             self.rollback()
         self.close()
 
-    def execute(self, sql: str, params=()):
+    def execute(self, sql, params=()):
+        if not isinstance(sql, str):
+            sql = str(sql)
         statement = _postgres_sql(sql)
         pragma = re.fullmatch(r"PRAGMA table_info\((\w+)\)", sql.strip(), re.IGNORECASE)
         if pragma:
             from app.db.engine import get_database_schema
 
-            execute_params = (get_database_schema(), pragma.group(1))
+            schema = get_database_schema()
+            table_name = pragma.group(1)
+            cache_key = (schema, table_name)
+            cached_rows = POSTGRES_TABLE_COLUMNS_CACHE.get(cache_key)
+            if cached_rows is not None:
+                return CachedPostgresCursor(cached_rows)
+            execute_params = (schema, table_name)
         else:
             execute_params = params
         table_match = re.search(r"INSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+(\w+)", sql, re.IGNORECASE)
@@ -173,6 +196,10 @@ class PostgresConnection:
             # Passing an empty tuple makes psycopg parse literal percent signs
             # as placeholders (for example LIKE '%学生%').
             cursor = self._connection.execute(statement)
+        if pragma:
+            rows = cursor.fetchall()
+            POSTGRES_TABLE_COLUMNS_CACHE[cache_key] = tuple(rows)
+            return CachedPostgresCursor(rows)
         rowcount = cursor.rowcount
         inserted_row = cursor.fetchone() if needs_id else None
         lastrowid = inserted_row["id"] if inserted_row else None

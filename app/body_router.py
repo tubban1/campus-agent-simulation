@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from app.body_runtime import body_runtime_available
+from app.body_runtime import body_runtime_available, _summary_energy
 from app.body_schemas import AgentBodyStateResponse, AgentBodyStatesResponse
 from app.db import get_connection
 
@@ -11,17 +11,24 @@ router = APIRouter(tags=["body"])
 
 
 def _alerts(state):
+    state = dict(state)
     alerts = []
     if float(state["fatigue"]) >= 75:
         alerts.append("疲劳")
     if float(state["hunger"]) >= 80:
         alerts.append("饥饿")
+    if float(state.get("hydration") or 0) >= 70:
+        alerts.append("缺水")
+    if float(state.get("nutrition") or 100) <= 35:
+        alerts.append("营养不足")
     if float(state["stress"]) >= 75:
         alerts.append("高压力")
     if float(state["attention"]) <= 25:
         alerts.append("注意力不足")
     if float(state["health"]) <= 55:
         alerts.append("健康风险")
+    if float(state.get("illness_load") or 0) >= 50:
+        alerts.append("身体不适")
     return alerts
 
 
@@ -39,7 +46,24 @@ def _body_rows(conn, resident_id=None):
         """,
         params,
     ).fetchall()
-    return [{**dict(row), "alerts": _alerts(row)} for row in rows]
+    return [
+        {
+            **dict(row),
+            # Old databases can still serve the core body state before the
+            # daily-needs migration is applied.  Keep the read API useful
+            # during that rollout rather than returning a schema error.
+            "hydration": dict(row).get("hydration", 25.0),
+            "nutrition": dict(row).get("nutrition", 78.0),
+            "activity_load": dict(row).get("activity_load", 18.0),
+            "illness_load": dict(row).get("illness_load", 0.0),
+            # Energy is a derived presentation value. Body state remains the
+            # single source of truth, but the profile UI needs this number to
+            # avoid falling back to a stale agent_profiles value.
+            "energy": _summary_energy(dict(row)),
+            "alerts": _alerts(row),
+        }
+        for row in rows
+    ]
 
 
 @router.get("/api/body-states", response_model=AgentBodyStatesResponse)

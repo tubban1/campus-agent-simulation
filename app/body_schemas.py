@@ -19,6 +19,12 @@ class AgentBodyStateResponse(BaseModel):
     social_energy: float = Field(ge=0, le=100)
     health: float = Field(ge=0, le=100)
     weather_exposure: float = Field(ge=0, le=100)
+    hydration: float = Field(ge=0, le=100)
+    nutrition: float = Field(ge=0, le=100)
+    activity_load: float = Field(ge=0, le=100)
+    illness_load: float = Field(ge=0, le=100)
+    sleep_state: str = "awake"
+    energy: int = Field(ge=0, le=100)
     last_updated_at: Optional[datetime] = None
     last_updated_tick: int = Field(ge=0)
     source: str

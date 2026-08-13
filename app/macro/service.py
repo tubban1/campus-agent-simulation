@@ -74,11 +74,15 @@ def _json(value) -> str:
     return json_dumps(value or {}, ensure_ascii=False, sort_keys=True)
 
 
+from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
+
+
 def _now(value=None) -> datetime:
     if value is None:
-        return datetime.now(timezone.utc)
-    result = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
-    return result if result.tzinfo else result.replace(tzinfo=timezone.utc)
+        return datetime.now(WORLD_TZ)
+    if isinstance(value, datetime):
+        return value.astimezone(WORLD_TZ) if value.tzinfo else value.replace(tzinfo=WORLD_TZ)
+    return parse_world_datetime(value) or datetime.now(WORLD_TZ)
 
 
 def _table_exists(conn, table_name: str) -> bool:
@@ -147,15 +151,16 @@ def _income_group(expected_income: int, disposable: int) -> str:
 def _resident_groups(conn) -> dict[int, dict[str, str]]:
     rows = conn.execute(
         """
+        WITH latest_budget AS (
+            SELECT resident_id, expected_income_minor, disposable_minor,
+                   ROW_NUMBER() OVER (PARTITION BY resident_id ORDER BY budget_date DESC, id DESC) AS rn
+            FROM household_budget_snapshots
+        )
         SELECT resident.id, resident.role,
                COALESCE(budget.expected_income_minor, 0) expected_income_minor,
                COALESCE(budget.disposable_minor, 0) disposable_minor
         FROM residents resident
-        LEFT JOIN household_budget_snapshots budget ON budget.id = (
-            SELECT candidate.id FROM household_budget_snapshots candidate
-            WHERE candidate.resident_id = resident.id
-            ORDER BY candidate.budget_date DESC, candidate.id DESC LIMIT 1
-        )
+        LEFT JOIN latest_budget budget ON budget.resident_id = resident.id AND budget.rn = 1
         ORDER BY resident.id
         """
     ).fetchall()
@@ -586,17 +591,18 @@ def _stock_metrics(conn, metric_ids, snapshot_id) -> dict:
 def _market_metrics(conn, metric_ids, snapshot_id, start, end, observed_at) -> dict:
     prices = conn.execute(
         """
+        WITH latest_prices AS (
+            SELECT id, mechanism_id, price_minor, base_price_minor, fulfilled_demand, valid_from,
+                   ROW_NUMBER() OVER (PARTITION BY mechanism_id ORDER BY valid_from DESC, id DESC) AS rn
+            FROM market_price_snapshots
+            WHERE valid_from <= ?
+        )
         SELECT price.id, price.mechanism_id, price.price_minor,
                price.base_price_minor, price.fulfilled_demand,
                price.valid_from, mechanism.mechanism_key
-        FROM market_price_snapshots price
+        FROM latest_prices price
         JOIN market_mechanisms mechanism ON mechanism.id = price.mechanism_id
-        WHERE price.id = (
-            SELECT candidate.id FROM market_price_snapshots candidate
-            WHERE candidate.mechanism_id = price.mechanism_id
-              AND candidate.valid_from <= ?
-            ORDER BY candidate.valid_from DESC, candidate.id DESC LIMIT 1
-        )
+        WHERE price.rn = 1
         ORDER BY price.mechanism_id
         """,
         (observed_at.isoformat(),),

@@ -5,6 +5,7 @@ import hashlib
 from app.json_utils import json_dumps
 import re
 from datetime import datetime, timedelta, timezone
+from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
 from html import unescape
 from urllib.parse import urlparse
 
@@ -61,8 +62,8 @@ SOURCE_SEEDS = (
         {},
     ),
     (
-        "open-meteo-chengdu",
-        "Open-Meteo 成都天气",
+        "open-meteo-beijing",
+        "Open-Meteo 北京天气",
         "weather",
         "https://api.open-meteo.com",
         "open-meteo-v1",
@@ -71,7 +72,12 @@ SOURCE_SEEDS = (
         1800,
         7200,
         "simulation",
-        {"latitude": 30.5728, "longitude": 104.0668, "timezone": "Asia/Shanghai"},
+        {
+            "latitude": 40.0062,
+            "longitude": 116.3269,
+            "timezone": "Asia/Shanghai",
+            "location_label": "北京（清华大学）",
+        },
     ),
     (
         "google-news-public",
@@ -122,14 +128,14 @@ def _load(value, fallback):
 
 
 def _time(value=None):
-    parsed = value or datetime.now(timezone.utc)
-    if isinstance(parsed, str):
-        parsed = datetime.fromisoformat(parsed.replace("Z", "+00:00"))
-    if not isinstance(parsed, datetime):
-        raise TypeError("时间值必须是 datetime 或 ISO 8601 字符串")
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    if value is None:
+        return datetime.now(WORLD_TZ)
+    if isinstance(value, datetime):
+        return value.astimezone(WORLD_TZ) if value.tzinfo else value.replace(tzinfo=WORLD_TZ)
+    parsed = parse_world_datetime(value)
+    if parsed:
+        return parsed
+    raise ValueError(f"无法解析的时间格式: {value}")
 
 
 def _hash(value):
@@ -439,6 +445,52 @@ def ingest_raw_observation(
 
 def seed_external_world(conn):
     catalog_created = source_created = rule_created = 0
+    # Older deployments created this project-owned source under a Chengdu key.
+    # Preserve its ID and audit history while moving its configuration to the
+    # actual campus location.  If both keys somehow exist, retire the legacy
+    # source so the runtime cannot ingest two conflicting city forecasts.
+    legacy_weather = conn.execute(
+        "SELECT id FROM external_sources WHERE source_key = ?",
+        ("open-meteo-chengdu",),
+    ).fetchone()
+    beijing_weather = conn.execute(
+        "SELECT id FROM external_sources WHERE source_key = ?",
+        ("open-meteo-beijing",),
+    ).fetchone()
+    beijing_config = _json({
+        "latitude": 40.0062,
+        "longitude": 116.3269,
+        "timezone": "Asia/Shanghai",
+        "location_label": "北京（清华大学）",
+    })
+    if legacy_weather and not beijing_weather:
+        conn.execute(
+            """
+            UPDATE external_sources
+            SET source_key = ?, name = ?, config_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            ("open-meteo-beijing", "Open-Meteo 北京天气", beijing_config, legacy_weather["id"]),
+        )
+    elif beijing_weather:
+        conn.execute(
+            "UPDATE external_sources SET name = ?, config_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            ("Open-Meteo 北京天气", beijing_config, beijing_weather["id"]),
+        )
+        if legacy_weather:
+            conn.execute(
+                "UPDATE external_sources SET enabled = 0, status = 'retired', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (legacy_weather["id"],),
+            )
+    # `external_information` is the live audience projection, not the audit
+    # ledger (raw observations/events retain their history).  Remove obsolete
+    # Chengdu forecast cards so a location migration cannot leave misleading
+    # weather in the campus dashboard or agent work memories.
+    if _table_exists(conn, "external_information"):
+        conn.execute(
+            "DELETE FROM external_information WHERE title LIKE ? OR source_name = ?",
+            ("成都天气更新：%", "Open-Meteo 成都天气"),
+        )
     for event_type, category, objective, high_impact in EVENT_CATALOG:
         before = conn.execute(
             "SELECT event_type FROM external_event_catalog WHERE event_type = ?",
@@ -592,7 +644,7 @@ def sync_registered_source(conn, source_id, now=None):
                     raw_observation_id=raw["id"],
                     event_key=f"weather:{raw['content_hash']}",
                     event_type="weather.condition_changed",
-                    title=f"成都天气更新：{payload.get('weather', '未知')}",
+                    title=f"{config.get('location_label', '校园')}天气更新：{payload.get('weather', '未知')}",
                     summary=(
                         f"气温 {payload.get('temperature')}℃，"
                         f"降雨指数 {int(rainfall)}。"
@@ -626,6 +678,8 @@ def sync_registered_source(conn, source_id, now=None):
                     confidence=source["trust_prior"],
                     payload=payload,
                 )
+                if not event.get("duplicate"):
+                    _project_news_event_to_information(conn, event, payload, source["name"])
             event_ids.append(event["id"])
         conn.execute(
             """
@@ -1654,6 +1708,110 @@ def export_external_snapshot(conn, *, export_key, snapshot_id, requested_by):
     )
 
 
+def _project_news_event_to_information(conn, event, payload, source_name):
+    title = event.get("title") or payload.get("title") or "公共资讯"
+    summary = event.get("summary") or payload.get("summary") or title
+    source_url = payload.get("link") or payload.get("source_url") or ""
+    published_at = payload.get("published_at_text") or str(event.get("published_at") or "")
+    category = payload.get("category")
+    if not category:
+        try:
+            from services.external_information import classify_information
+            category = classify_information(f"{title} {summary}")
+        except Exception:
+            category = "general"
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO external_information
+        (title, summary, source_name, source_url, category, published_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (title, summary, source_name, source_url, category, published_at),
+    )
+    row = conn.execute(
+        "SELECT * FROM external_information WHERE title = ?", (title,)
+    ).fetchone()
+    if row:
+        info = dict(row)
+        from services.external_information import seed_recipients, deliver_information
+        from app.main import (
+            ensure_external_information_system,
+            ensure_profile_meta,
+            load_json_text,
+            json_dumps,
+            get_current_day,
+            add_memory,
+        )
+        def deliver_cb(c, information, resident_id, channel="外部资讯订阅", relevance=80, credibility=88):
+            return deliver_information(
+                c,
+                information,
+                resident_id,
+                channel,
+                relevance,
+                credibility,
+                "",
+                None,
+                ensure_system=ensure_external_information_system,
+                ensure_profile=ensure_profile_meta,
+                load_json=load_json_text,
+                json_dumps=json_dumps,
+                current_day=get_current_day,
+                add_memory=add_memory,
+            )
+        seed_recipients(conn, info, deliver=deliver_cb)
+
+
+def maybe_sync_due_sources(conn, now=None):
+    now = _time(now)
+    sources = conn.execute(
+        """
+        SELECT * FROM external_sources
+        WHERE enabled = 1 AND status = 'active'
+        """
+    ).fetchall()
+    sync_results = []
+    for raw_source in sources:
+        source = dict(raw_source)
+        source_id = source["id"]
+        source_key = source["source_key"]
+        if source["source_type"] not in {"rss", "weather"}:
+            continue
+        last_attempt = source.get("last_attempt_at")
+        poll_interval = int(source.get("poll_interval_seconds") or 3600)
+        if last_attempt:
+            try:
+                last_attempt_time = _time(last_attempt)
+                if (now - last_attempt_time).total_seconds() < poll_interval:
+                    sync_results.append({
+                        "source_id": source_id,
+                        "source_key": source_key,
+                        "status": "skipped",
+                        "reason": "interval_not_elapsed",
+                    })
+                    continue
+            except Exception:
+                pass
+        try:
+            res = sync_registered_source(conn, source_id, now=now)
+            sync_results.append({
+                "source_id": source_id,
+                "source_key": source_key,
+                "status": "success",
+                "record_count": res.get("record_count", 0),
+                "event_count": len(res.get("event_ids", [])),
+                "sync_run_id": res.get("sync_run", {}).get("id"),
+            })
+        except Exception as exc:
+            sync_results.append({
+                "source_id": source_id,
+                "source_key": source_key,
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+    return sync_results
+
+
 def process_external_world_runtime(conn, world_time=None, branch_key="main"):
     if not external_world_available(conn) or not _table_exists(conn, "external_runtime_modes"):
         return {"available": False}
@@ -1662,6 +1820,7 @@ def process_external_world_runtime(conn, world_time=None, branch_key="main"):
         "SELECT * FROM external_runtime_modes WHERE branch_key = ?", (branch_key,)
     ).fetchone()
     replayed = []
+    sync_results = []
     if mode and mode["mode"] == "replay":
         due = conn.execute(
             """
@@ -1683,6 +1842,7 @@ def process_external_world_runtime(conn, world_time=None, branch_key="main"):
             )
             replayed.append(item["external_event_id"])
     elif not mode or mode["mode"] == "live":
+        sync_results = maybe_sync_due_sources(conn, now)
         ready = conn.execute(
             """
             SELECT id FROM external_events
@@ -1699,6 +1859,7 @@ def process_external_world_runtime(conn, world_time=None, branch_key="main"):
     return {
         "available": True,
         "mode": mode["mode"] if mode else "live",
+        "sync_results": sync_results,
         "replayed_event_ids": replayed,
         "impacts": impact_result,
         "exposures": exposures,

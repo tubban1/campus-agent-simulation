@@ -6,6 +6,13 @@ def list_branches(conn, *, decode_branch):
     return {"branches": [decode_branch(row) for row in rows]}
 
 
+def list_snapshots(conn, limit, *, decode_snapshot):
+    rows = conn.execute(
+        "SELECT * FROM world_snapshots ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return {"snapshots": [decode_snapshot(row) for row in rows]}
+
+
 def get_snapshot(conn, snapshot_id, *, include_state, decode_snapshot):
     row = conn.execute(
         "SELECT * FROM world_snapshots WHERE id = ?", (snapshot_id,)

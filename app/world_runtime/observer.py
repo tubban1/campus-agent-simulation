@@ -9,6 +9,7 @@ def build_world_observer_state(
     get_campus_environment,
     get_space_snapshot,
     rows_to_dicts,
+    decode_world_event,
 ):
     day = get_current_day(conn)
     runtime = read_world_runtime(conn)
@@ -43,7 +44,7 @@ def build_world_observer_state(
         "environment": get_campus_environment(conn, day),
         "spaces": get_space_snapshot(conn, day),
         "agents": rows_to_dicts(residents),
-        "events": list(reversed(rows_to_dicts(events))),
+        "events": [decode_world_event(row) for row in reversed(events)],
         "runtime": {
             "status": runtime["status"],
             "world_time": runtime["world_time"],

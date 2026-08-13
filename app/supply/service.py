@@ -38,15 +38,19 @@ SERVICE_DEFAULTS = {
 }
 
 
+from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
+
+
 def _json(value) -> str:
     return json_dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 def _now(value=None) -> datetime:
     if value is None:
-        return datetime.now(timezone.utc)
-    result = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
-    return result if result.tzinfo else result.replace(tzinfo=timezone.utc)
+        return datetime.now(WORLD_TZ)
+    if isinstance(value, datetime):
+        return value.astimezone(WORLD_TZ) if value.tzinfo else value.replace(tzinfo=WORLD_TZ)
+    return parse_world_datetime(value) or datetime.now(WORLD_TZ)
 
 
 def supply_runtime_available(conn) -> bool:
@@ -84,9 +88,9 @@ def _ensure_inventory_account(
     return conn.execute(
         """
         SELECT * FROM inventory_accounts
-        WHERE owner_actor_key = ? AND item_id = ? AND location = ?
+        WHERE inventory_key = ?
         """,
-        (owner_actor_key, item_id, location),
+        (key,),
     ).fetchone()
 
 
@@ -293,13 +297,16 @@ def consumption_availability(conn, location: str):
     preferred = "套餐饭" if location == "食堂" else "奶茶"
     row = conn.execute(
         """
-        SELECT account.quantity_on_hand, account.owner_actor_key
+        SELECT account.owner_actor_key,
+               COALESCE(SUM(account.quantity_on_hand - account.quantity_reserved), 0) AS quantity_on_hand
         FROM inventory_accounts account
         JOIN catalog_items item ON item.id = account.item_id
-        WHERE item.name = ? AND account.status = 'active'
-        ORDER BY account.quantity_on_hand DESC LIMIT 1
+        WHERE item.name = ? AND account.location = ? AND account.status = 'active'
+        GROUP BY account.owner_actor_key
+        ORDER BY quantity_on_hand DESC, account.owner_actor_key
+        LIMIT 1
         """,
-        (preferred,),
+        (preferred, location),
     ).fetchone()
     return {
         "available": bool(row and int(row["quantity_on_hand"]) > 0),
@@ -316,15 +323,17 @@ def fulfill_runtime_consumption(
     location: str,
     amount_minor: int,
     action_execution_id: Optional[int],
+    world_time: Optional[datetime] = None,
 ):
     availability = consumption_availability(conn, location)
     if not availability["available"]:
         raise ValueError("商品缺货")
+    now = _now(world_time)
     source_id = str(action_execution_id) if action_execution_id is not None else ""
     transaction_key = (
         f"action-consume:{action_execution_id}"
         if action_execution_id is not None
-        else f"direct-consume:{resident_id}:{location}:{datetime.now(timezone.utc).isoformat()}"
+        else f"direct-consume:{resident_id}:{location}:{now.isoformat()}"
     )
     return settle_goods_trade(
         conn, transaction_key=transaction_key,
@@ -578,6 +587,8 @@ def _start_production_batch(conn, recipe, now):
         """
         SELECT * FROM inventory_accounts
         WHERE owner_actor_key = ? AND item_id = ? AND location = ?
+        ORDER BY quantity_on_hand DESC, id
+        LIMIT 1
         """,
         (recipe["producer_actor_key"], recipe["output_item_id"], recipe["location"]),
     ).fetchone()

@@ -17,15 +17,19 @@ from app.credit.service import (
 RULE_VERSION = "budget-choice-v1"
 
 
+from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
+
+
 def _json(value) -> str:
     return json_dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 def _now(value=None) -> datetime:
     if value is None:
-        return datetime.now(timezone.utc)
-    result = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
-    return result if result.tzinfo else result.replace(tzinfo=timezone.utc)
+        return datetime.now(WORLD_TZ)
+    if isinstance(value, datetime):
+        return value.astimezone(WORLD_TZ) if value.tzinfo else value.replace(tzinfo=WORLD_TZ)
+    return parse_world_datetime(value) or datetime.now(WORLD_TZ)
 
 
 def budget_runtime_available(conn) -> bool:

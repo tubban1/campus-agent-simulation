@@ -46,8 +46,10 @@ class OpenMeteoAdapter:
     adapter_key = "open-meteo-v1"
 
     def fetch(self, config):
-        latitude = float(config.get("latitude", 30.5728))
-        longitude = float(config.get("longitude", 104.0668))
+        # Beijing / Tsinghua is the project default.  Per-world source
+        # configuration overrides this for other geographic simulations.
+        latitude = float(config.get("latitude", 40.0062))
+        longitude = float(config.get("longitude", 116.3269))
         response = requests.get(
             "https://api.open-meteo.com/v1/forecast",
             params={

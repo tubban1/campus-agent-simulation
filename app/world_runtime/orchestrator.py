@@ -1,5 +1,7 @@
 """Composable orchestration helpers for a world tick."""
 
+import os
+
 
 def start_world_tick(
     conn,
@@ -174,9 +176,89 @@ def run_pre_agent_subsystems(
     process_organization_runtime,
     process_social_institution_runtime,
     process_macro_runtime,
+    process_night_dreams=None,
 ):
+    quiet_hours = 0 <= world_time.hour < 6
+    quiet_plan_result = {
+        "created": 0,
+        "llm_plans": 0,
+        "rule_based_plans": 0,
+        "backfilled_plans": 0,
+        "goals_revised": 0,
+        "skipped": True,
+        "reason": "quiet_hours",
+    }
+    core_tick_only = os.getenv("WORLD_RUNTIME_EXTENDED_SUBSYSTEMS_ENABLED", "true").strip().lower() not in {"1", "true", "yes", "on"}
+    if core_tick_only:
+        ensure_result = quiet_plan_result if quiet_hours else ensure_current_action_plans(conn, world_time)
+        environment = sync_world_time_environment(conn, world_time)
+        # Core mode is the production default.  It must still receive real
+        # weather; otherwise weather factors and weather-aware environment
+        # values only change in the optional extended runtime.
+        weather_sync = maybe_auto_sync_real_weather(
+            conn, world_time, tick_id=tick_id, day=day, slot=slot
+        )
+        if not weather_sync.get("skipped") and not weather_sync.get("failed"):
+            environment = get_campus_environment(conn, day)
+        start_event = append_world_event(
+            "world_tick_started",
+            "世界 tick 开始",
+            f"{slot} 核心 tick 开始，世界正在按真实时间推进。",
+            tick_id=tick_id,
+            payload={
+                "reason": reason,
+                "plans_created": ensure_result["created"],
+                "llm_plans": ensure_result["llm_plans"],
+                "rule_based_plans": ensure_result["rule_based_plans"],
+                "weather": environment.get("weather"),
+                "weather_sync": weather_sync,
+                "mode": "core",
+                "day_sync": day_sync,
+            },
+            day=day,
+            slot=slot,
+            source_type="runtime_tick",
+            source_id=tick_id,
+        )
+        supply_updates = process_supply_runtime(conn, world_time)
+        body_states = advance_body_states(conn, world_time, tick_index, environment)
+        night_dreams = process_night_dreams(conn, world_time, day=day) if process_night_dreams else {"skipped": True, "reason": "not_configured"}
+        movement_results = advance_active_movements(conn, world_time, tick_index)
+        movement_events = record_movement_events(
+            movement_results,
+            append_world_event=append_world_event,
+            tick_id=tick_id,
+            day=day,
+            slot=slot,
+            parent_event_id=start_event["id"],
+        )
+        conn.commit()
+        skipped = {"skipped": True, "reason": "disabled_in_core_tick"}
+        return {
+            "environment": environment,
+            "start_event": start_event,
+            "local_observations": [],
+            "body_states": body_states,
+            "night_dreams": night_dreams,
+            "movement_results": movement_results,
+            "movement_events": movement_events,
+            "multiscale_updates": {"due_count": 0, "completed": [], "failed": []},
+            "organization_updates": skipped,
+            "organization_events": [],
+            "supply_updates": supply_updates,
+            "market_updates": skipped,
+            "labor_updates": skipped,
+            "credit_updates": skipped,
+            "budget_updates": skipped,
+            "public_policy_updates": skipped,
+            "social_institution_updates": skipped,
+            "macro_updates": skipped,
+            "resilience_updates": skipped,
+            "population_updates": skipped,
+            "external_world_updates": skipped,
+        }
     population_updates = process_population_runtime(conn, world_time)
-    ensure_result = ensure_current_action_plans(conn, world_time)
+    ensure_result = quiet_plan_result if quiet_hours else ensure_current_action_plans(conn, world_time)
     environment = sync_world_time_environment(conn, world_time)
     delayed_effects = process_due_world_delayed_effects(
         conn,
@@ -192,7 +274,17 @@ def run_pre_agent_subsystems(
             branch_key=active_branch_key(),
         )
         weather_sync = {"skipped": True, "reason": "delegated_to_external_ingestion"}
-        external_sync = {"skipped": True, "reason": "delegated_to_external_ingestion"}
+        sync_results = external_world_updates.get("sync_results") or []
+        failed_syncs = [s for s in sync_results if s.get("status") == "failed"]
+        succ_syncs = [s for s in sync_results if s.get("status") == "success"]
+        external_sync = {
+            "skipped": False,
+            "delegated_to_external_ingestion": True,
+            "source_sync_count": len(sync_results),
+            "success_count": len(succ_syncs),
+            "failed_count": len(failed_syncs),
+            "sync_results": sync_results,
+        }
     else:
         external_world_updates = {"available": False}
         weather_sync = maybe_auto_sync_real_weather(
@@ -203,7 +295,10 @@ def run_pre_agent_subsystems(
         external_sync = maybe_auto_sync_external_information(
             conn, world_time, tick_id=tick_id, day=day, slot=slot
         )
-    resilience_updates = process_resilience_runtime(conn, world_time)
+    if os.getenv("WORLD_RUNTIME_RESILIENCE_TICK_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        resilience_updates = process_resilience_runtime(conn, world_time)
+    else:
+        resilience_updates = {"skipped": True, "reason": "disabled_in_realtime_tick"}
     start_event = append_world_event(
         "world_tick_started",
         "世界 tick 开始",
@@ -240,6 +335,7 @@ def run_pre_agent_subsystems(
         branch_key=active_branch_key(),
     )
     body_states = advance_body_states(conn, world_time, tick_index, environment)
+    night_dreams = process_night_dreams(conn, world_time, day=day) if process_night_dreams else {"skipped": True, "reason": "not_configured"}
     movement_results = advance_active_movements(conn, world_time, tick_index)
     movement_events = record_movement_events(
         movement_results,
@@ -258,7 +354,10 @@ def run_pre_agent_subsystems(
         parent_event_id=start_event["id"],
     )
     supply_updates = process_supply_runtime(conn, world_time)
-    market_updates = process_market_runtime(conn, world_time)
+    if os.getenv("WORLD_RUNTIME_MARKET_TICK_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        market_updates = process_market_runtime(conn, world_time)
+    else:
+        market_updates = {"skipped": True, "reason": "disabled_in_realtime_tick"}
     labor_updates = process_labor_runtime(conn, world_time)
     credit_updates = process_credit_runtime(conn, world_time)
     budget_updates = process_budget_runtime(conn, world_time)
@@ -281,6 +380,7 @@ def run_pre_agent_subsystems(
         "start_event": start_event,
         "local_observations": local_observations,
         "body_states": body_states,
+        "night_dreams": night_dreams,
         "movement_results": movement_results,
         "movement_events": movement_events,
         "multiscale_updates": multiscale_updates,
@@ -318,7 +418,16 @@ def run_agent_and_learning_stage(
     process_institution_evolution,
     process_longitudinal_runtime,
 ):
-    selected_agents, next_cursor, focused_set = select_world_tick_agents(conn, runtime)
+    # During deep night physical state and the world clock still advance, but
+    # resident planning is intentionally silent.  Active movements are
+    # advanced in the pre-agent stage; exceptional work can be modeled as a
+    # movement or scheduled runtime instead of waking every resident.
+    if 0 <= world_time.hour < 6:
+        selected_agents = []
+        next_cursor = int(runtime.get("current_agent_cursor", 0) or 0)
+        focused_set = set()
+    else:
+        selected_agents, next_cursor, focused_set = select_world_tick_agents(conn, runtime)
     results = []
     failed = 0
     for agent in selected_agents:
@@ -335,6 +444,18 @@ def run_agent_and_learning_stage(
         results.append(item)
         if not item["success"]:
             failed += 1
+    if os.getenv("WORLD_RUNTIME_EXTENDED_SUBSYSTEMS_ENABLED", "true").strip().lower() not in {"1", "true", "yes", "on"}:
+        skipped = {"skipped": True, "reason": "disabled_in_core_tick"}
+        return {
+            "selected_agents": selected_agents,
+            "next_cursor": next_cursor,
+            "results": results,
+            "failed": failed,
+            "adaptive_learning": skipped,
+            "norm_emergence": skipped,
+            "institution_evolution": skipped,
+            "longitudinal_updates": skipped,
+        }
     branch_key = active_branch_key()
     adaptive_learning = process_adaptive_learning(
         conn,

@@ -264,7 +264,7 @@ class ExternalWorldRuntimeTest(unittest.TestCase):
         source = conn.execute(
             """
             SELECT * FROM external_sources
-            WHERE source_key = 'open-meteo-chengdu'
+            WHERE source_key = 'open-meteo-beijing'
             """
         ).fetchone()
         with patch.object(
@@ -563,6 +563,135 @@ class ExternalWorldRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(exported["status"], "complete")
         self.assertTrue(exported["checksum"])
+        conn.close()
+
+    def test_346_single_pipeline_due_sync_projection_and_failure_visibility(self):
+        conn = self.connection()
+        rss_records = [
+            {
+                "source_record_id": "unified-news-101",
+                "observed_at": self.now,
+                "payload": {
+                    "title": "链路统一测试：校园科技周开幕",
+                    "summary": "AI 与大数据展示吸引数百人参展",
+                    "link": "https://example.test/news-101",
+                    "published_at_text": "2026-07-30 10:00",
+                    "category": "technology",
+                },
+            }
+        ]
+        source = conn.execute(
+            "SELECT * FROM external_sources WHERE source_key = 'google-news-public'"
+        ).fetchone()
+        self.assertIsNotNone(source)
+
+        # 1. 验证正常抓取 -> 审计事件 + 自动投影到 external_information + agent_information + Agent 记忆/感知
+        with patch("app.external_world.adapters.FixedRSSAdapter.fetch", return_value=rss_records):
+            runtime_res = process_external_world_runtime(conn, self.now)
+
+        self.assertTrue(runtime_res["available"])
+        sync_results = runtime_res.get("sync_results", [])
+        self.assertTrue(len(sync_results) >= 1)
+        succ = [s for s in sync_results if s["source_key"] == "google-news-public"][0]
+        self.assertEqual(succ["status"], "success")
+        self.assertEqual(succ["record_count"], 1)
+
+        # 验证 external_information
+        info_row = conn.execute(
+            "SELECT * FROM external_information WHERE title = '链路统一测试：校园科技周开幕'"
+        ).fetchone()
+        self.assertIsNotNone(info_row)
+        self.assertEqual(info_row["source_name"], source["name"])
+
+        # 验证 agent_information 已经被送达
+        agent_info_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM agent_information WHERE information_id = ?",
+            (info_row["id"],),
+        ).fetchone()["cnt"]
+        self.assertTrue(agent_info_count > 0, "资讯应被送达给受众 Agent")
+
+        # 验证 Agent 认知/记忆中包含了该资讯
+        mem_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM memories WHERE source = 'external_information' AND content LIKE '%校园科技周开幕%'"
+        ).fetchone()["cnt"]
+        self.assertTrue(mem_count > 0, "受众 Agent 的工作记忆中应写入对应资讯记忆")
+
+        # 2. 验证 orchestrator 产生的 payload.external_sync 包含完整的 sync_results 与失败计数
+        from app.world_runtime.orchestrator import run_pre_agent_subsystems
+        from services.external_information import compact_sync_result as compact_external_sync_result
+        tick_time = self.now + timedelta(hours=2)
+        with patch.dict("os.environ", {"WORLD_RUNTIME_EXTENDED_SUBSYSTEMS_ENABLED": "true"}):
+            with patch("app.external_world.adapters.FixedRSSAdapter.fetch", return_value=rss_records):
+                pre_agent = run_pre_agent_subsystems(
+                    conn,
+                    "test_payload_external_sync",
+                    world_time=tick_time,
+                    tick_id="test-tick-1",
+                    tick_index=1,
+                    day_sync={"day": 1, "changed": False},
+                    day=1,
+                    slot="08:00",
+                    active_branch_key=lambda: "main",
+                    append_world_event=lambda *args, **kwargs: main.append_world_event(conn, *args, **kwargs),
+                    compact_external_sync_result=compact_external_sync_result,
+                    process_population_runtime=lambda c, wt: {"available": True},
+                    ensure_current_action_plans=lambda c, wt: {"created": 0, "llm_plans": 0, "rule_based_plans": 0},
+                    sync_world_time_environment=lambda c, wt: {"weather": "晴朗"},
+                    process_due_world_delayed_effects=lambda c, wt, **kw: {"due_count": 0, "applied": [], "failed": []},
+                    external_world_available=lambda c: True,
+                    process_external_world_runtime=process_external_world_runtime,
+                    maybe_auto_sync_real_weather=lambda c, wt, **kw: {"skipped": True},
+                    get_campus_environment=lambda c, d: {"weather": "晴朗"},
+                    maybe_auto_sync_external_information=lambda c, wt, **kw: {"skipped": True},
+                    process_resilience_runtime=lambda c, wt: {"skipped": True},
+                    capture_tick_observations=lambda c, wt, tid, d, **kw: [],
+                    advance_body_states=lambda c, wt, ti, env: [],
+                    advance_active_movements=lambda c, wt, ti: [],
+                    run_due_world_updates=lambda *args, **kwargs: {"due_count": 0, "completed": [], "failed": []},
+                    process_supply_runtime=lambda c, wt: {"skipped": True},
+                    process_market_runtime=lambda c, wt: {"skipped": True},
+                    process_labor_runtime=lambda c, wt: {"skipped": True},
+                    process_credit_runtime=lambda c, wt: {"skipped": True},
+                    process_budget_runtime=lambda c, wt: {"skipped": True},
+                    process_public_policy_runtime=lambda c, wt: {"skipped": True},
+                    process_organization_runtime=lambda *args, **kwargs: {"executed": []},
+                    process_social_institution_runtime=lambda c, wt: {"skipped": True},
+                    process_macro_runtime=lambda c, wt: {"skipped": True},
+                )
+
+        start_event = pre_agent["start_event"]
+        payload = start_event["payload"]
+        if isinstance(payload, str):
+            import json
+            payload = json.loads(payload)
+        ext_sync = payload.get("external_sync", {})
+        self.assertTrue(ext_sync.get("delegated_to_external_ingestion"))
+        self.assertIn("sync_results", ext_sync, "payload.external_sync 必须显式透传 sync_results")
+        self.assertIn("failed_count", ext_sync, "payload.external_sync 必须显式透传 failed_count")
+
+        # 3. 验证投影过程异常时不被静默忽略 -> 转化为 sync_registered_source 的失败状态与错误日志
+        later = self.now + timedelta(hours=5)
+        with patch("app.external_world.service._project_news_event_to_information", side_effect=RuntimeError("Projection Database Exception Simulated")):
+            with patch("app.external_world.adapters.FixedRSSAdapter.fetch", return_value=[{
+                "source_record_id": "news-proj-fail-999",
+                "observed_at": later,
+                "payload": {"title": "投影失败新闻", "summary": "测", "link": "http://test", "category": "technology"}
+            }]):
+                proj_failed_res = process_external_world_runtime(conn, later)
+
+        proj_failed_item = [s for s in proj_failed_res.get("sync_results", []) if s["source_key"] == "google-news-public"][0]
+        self.assertEqual(proj_failed_item["status"], "failed", "投影失败时同步结果必须报告为 failed")
+        self.assertIn("Projection Database Exception Simulated", proj_failed_item["error"])
+
+        # 4. 验证网络轮询失败 -> 捕捉并记录失败原因到 sync_results
+        much_later = self.now + timedelta(hours=9)
+        with patch("app.external_world.adapters.FixedRSSAdapter.fetch", side_effect=RuntimeError("Connection Reset Simulated")):
+            failed_runtime_res = process_external_world_runtime(conn, much_later)
+
+        failed_results = failed_runtime_res.get("sync_results", [])
+        failed_item = [s for s in failed_results if s["source_key"] == "google-news-public"][0]
+        self.assertEqual(failed_item["status"], "failed")
+        self.assertIn("Connection Reset Simulated", failed_item["error"])
         conn.close()
 
 

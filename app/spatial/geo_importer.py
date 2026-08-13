@@ -5,14 +5,15 @@ import hashlib
 import json
 import math
 import re
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import bindparam, func, insert, select, text, update
 from sqlalchemy.engine import Connection
 
-from app.spatial.models import spatial_edges, spatial_nodes
+from app.spatial.models import spatial_edges, spatial_import_batches, spatial_nodes
 
 
 EARTH_RADIUS_METERS = 6_371_000
@@ -59,7 +60,7 @@ POI_AMENITIES = {
 TRANSIT_KEYS = {"station", "halt", "stop", "platform", "subway_entrance"}
 
 
-@dataclass(frozen=True)
+@dataclass
 class GeoImportSummary:
     world_key: str
     origin_lat: float
@@ -86,10 +87,8 @@ class GeoImportSummary:
 
 
 def load_geojson(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("type") != "FeatureCollection":
-        raise ValueError("GeoJSON must be a FeatureCollection.")
-    return payload
+    with path.open("r", encoding="utf-8") as file:
+        return json.load(file)
 
 
 def import_campus_geojson(
@@ -111,6 +110,16 @@ def import_campus_geojson(
     )
 
 
+def sync_database_sequences(connection: Connection) -> None:
+    if connection.dialect.name == "postgresql":
+        connection.execute(text(
+            "SELECT setval(pg_get_serial_sequence('spatial_nodes', 'id'), COALESCE((SELECT MAX(id) FROM spatial_nodes), 1), true);"
+        ))
+        connection.execute(text(
+            "SELECT setval(pg_get_serial_sequence('spatial_edges', 'id'), COALESCE((SELECT MAX(id) FROM spatial_edges), 1), true);"
+        ))
+
+
 def import_real_world_geojson(
     connection: Connection,
     geojson: dict[str, Any],
@@ -118,6 +127,8 @@ def import_real_world_geojson(
     world_key: str,
     origin_lat: Optional[float] = None,
     origin_lon: Optional[float] = None,
+    source: str = "OpenStreetMap contributors / Overpass API",
+    license_info: str = "ODbL 1.0",
     dry_run: bool = False,
 ) -> GeoImportSummary:
     features = list(geojson.get("features") or [])
@@ -126,7 +137,9 @@ def import_real_world_geojson(
     transformer = LocalProjector(origin_lat, origin_lon)
     existing_nodes = {
         row.code: dict(row)
-        for row in connection.execute(select(spatial_nodes)).mappings()
+        for row in connection.execute(
+            select(spatial_nodes).where(spatial_nodes.c.world_key == world_key)
+        ).mappings()
     }
     existing_edges = {
         (int(row.from_node_id), int(row.to_node_id))
@@ -134,30 +147,35 @@ def import_real_world_geojson(
             select(spatial_edges.c.from_node_id, spatial_edges.c.to_node_id)
         )
     }
+    existing_max_node_id = connection.execute(
+        select(func.max(spatial_nodes.c.id))
+    ).scalar() or 0
+    next_node_id = existing_max_node_id
+
     nodes_created = nodes_updated = edges_created = edges_skipped = features_imported = 0
     imported_nodes: dict[str, dict[str, Any]] = {}
+    pending_node_inserts: list[dict[str, Any]] = []
+    pending_node_updates: list[dict[str, Any]] = []
+    pending_edge_inserts: list[dict[str, Any]] = []
+
+    db_existing_codes = set(existing_nodes.keys())
 
     def upsert_node(values: dict[str, Any]) -> dict[str, Any]:
-        nonlocal nodes_created, nodes_updated
+        nonlocal nodes_created, nodes_updated, next_node_id
         existing = existing_nodes.get(values["code"])
         if existing:
             merged = {**existing, **values, "id": existing["id"]}
             existing_nodes[values["code"]] = merged
             imported_nodes[values["code"]] = merged
-            if not dry_run:
-                connection.execute(
-                    update(spatial_nodes)
-                    .where(spatial_nodes.c.code == values["code"])
-                    .values(**{key: value for key, value in values.items() if key != "code"})
-                )
-            nodes_updated += 1
+            if values["code"] in db_existing_codes:
+                pending_node_updates.append(merged)
+                nodes_updated += 1
             return merged
-        node = {"id": -len(imported_nodes) - 1, **values}
-        if not dry_run:
-            cursor = connection.execute(insert(spatial_nodes).values(**values))
-            node["id"] = cursor.inserted_primary_key[0]
+        next_node_id += 1
+        node = {"id": next_node_id, **values}
         existing_nodes[values["code"]] = node
         imported_nodes[values["code"]] = node
+        pending_node_inserts.append(node)
         nodes_created += 1
         return node
 
@@ -188,35 +206,258 @@ def import_real_world_geojson(
             if not path_kind:
                 continue
             lines = coordinates if geometry_type == "MultiLineString" else [coordinates]
-            for line_index, line in enumerate(lines):
+            path_name = feature_name(properties, "")
+            line_imported = False
+            for line in lines:
                 if len(line) < 2:
                     continue
-                from_values, to_values, edge_values = path_feature_to_nodes_and_edge(
-                    feature,
-                    index,
-                    line_index,
-                    world_key,
-                    line,
-                    transformer,
-                    path_kind,
-                )
-                from_node = upsert_node(from_values)
-                to_node = upsert_node(to_values)
-                edge_key = (int(from_node["id"]), int(to_node["id"]))
-                if edge_key in existing_edges:
-                    edges_skipped += 1
-                    continue
-                if not dry_run:
-                    connection.execute(
-                        insert(spatial_edges).values(
-                            from_node_id=edge_key[0],
-                            to_node_id=edge_key[1],
-                            **edge_values,
-                        )
-                    )
-                existing_edges.add(edge_key)
-                edges_created += 1
+                for i in range(len(line) - 1):
+                    p1 = line[i]
+                    p2 = line[i + 1]
+                    node1_values = make_path_point_node(p1, world_key, transformer, properties, path_kind, path_name)
+                    node2_values = make_path_point_node(p2, world_key, transformer, properties, path_kind, path_name)
+                    n1 = upsert_node(node1_values)
+                    n2 = upsert_node(node2_values)
+                    if n1["id"] == n2["id"]:
+                        continue
+                    dist_m = math.hypot(n2["x"] - n1["x"], n2["z"] - n1["z"])
+                    if dist_m < 0.01:
+                        continue
+                    base_min = max(0.01, dist_m / 78.0)
+
+                    oneway_val = str(properties.get("oneway") or "").lower()
+                    if oneway_val in {"-1"}:
+                        f_id, t_id = int(n2["id"]), int(n1["id"])
+                        bidirectional = False
+                    elif oneway_val in {"yes", "true", "1"}:
+                        f_id, t_id = int(n1["id"]), int(n2["id"])
+                        bidirectional = False
+                    else:
+                        f_id, t_id = int(n1["id"]), int(n2["id"])
+                        bidirectional = True
+
+                    edge_key = (f_id, t_id)
+                    if edge_key in existing_edges:
+                        edges_skipped += 1
+                        continue
+
+                    pending_edge_inserts.append({
+                        "from_node_id": f_id,
+                        "to_node_id": t_id,
+                        "distance_meters": round(dist_m, 2),
+                        "base_minutes": round(base_min, 3),
+                        "bidirectional": bidirectional,
+                        "status": "open",
+                        "congestion_factor": 1.0,
+                        "weather_factor": 1.0,
+                        "properties": {
+                            "source": "geojson",
+                            "world_key": world_key,
+                            "path_kind": path_kind,
+                            "bridge": properties.get("bridge"),
+                            "tunnel": properties.get("tunnel"),
+                            "layer": properties.get("layer"),
+                            "osm_tags": compact_osm_tags(properties),
+                            "real_world": True,
+                        },
+                    })
+                    existing_edges.add(edge_key)
+                    edges_created += 1
+                    line_imported = True
+            if line_imported:
                 features_imported += 1
+
+    # Connect buildings, POIs, outdoor_areas to nearest path_point node using spatial grid index
+    path_nodes = [
+        node for node in existing_nodes.values()
+        if node.get("node_type") == "path_point" and node.get("world_key", "default") == world_key
+    ]
+    if path_nodes:
+        # Build adjacency graph of path nodes to identify the main road network components
+        path_adj: dict[int, set[int]] = {int(n["id"]): set() for n in path_nodes}
+        for e in pending_edge_inserts:
+            u, v = int(e["from_node_id"]), int(e["to_node_id"])
+            if u in path_adj and v in path_adj:
+                path_adj[u].add(v)
+                if e.get("bidirectional", True):
+                    path_adj[v].add(u)
+
+        visited_ids = set()
+        road_components = []
+        for pid in path_adj:
+            if pid not in visited_ids:
+                comp = []
+                q = deque([pid])
+                visited_ids.add(pid)
+                while q:
+                    curr = q.popleft()
+                    comp.append(curr)
+                    for nxt in path_adj[curr]:
+                        if nxt not in visited_ids:
+                            visited_ids.add(nxt)
+                            q.append(nxt)
+                road_components.append(comp)
+
+        road_components.sort(key=len, reverse=True)
+        # Select path nodes belonging to main road components (component size >= 10)
+        main_road_node_ids = set()
+        for comp in road_components:
+            if len(comp) >= 10 or (road_components and comp == road_components[0]):
+                main_road_node_ids.update(comp)
+
+        attachable_path_nodes = [n for n in path_nodes if int(n["id"]) in main_road_node_ids]
+        if not attachable_path_nodes:
+            attachable_path_nodes = path_nodes
+
+        grid_cell_size = 100.0
+        grid: dict[tuple[int, int], list[dict[str, Any]]] = {}
+        for p_node in attachable_path_nodes:
+            cell = (int(p_node["x"] // grid_cell_size), int(p_node["z"] // grid_cell_size))
+            grid.setdefault(cell, []).append(p_node)
+
+        target_nodes = [
+            node for node in imported_nodes.values()
+            if node.get("node_type") in {"building", "poi", "outdoor_area"}
+        ]
+        for target_node in target_nodes:
+            target_id = int(target_node["id"])
+            tx, tz = target_node["x"], target_node["z"]
+            best_node = None
+            best_dist = 250.0  # Max attachment radius 250m
+            cx, cz = int(tx // grid_cell_size), int(tz // grid_cell_size)
+            for dx in (-2, -1, 0, 1, 2):
+                for dz in (-2, -1, 0, 1, 2):
+                    neighbor_nodes = grid.get((cx + dx, cz + dz))
+                    if not neighbor_nodes:
+                        continue
+                    for p_node in neighbor_nodes:
+                        d = math.hypot(p_node["x"] - tx, p_node["z"] - tz)
+                        if d < best_dist:
+                            best_dist = d
+                            best_node = p_node
+
+            if best_node:
+                p_id = int(best_node["id"])
+                edge_key = (target_id, p_id)
+                if edge_key not in existing_edges:
+                    dist_m = max(0.1, round(best_dist, 2))
+                    pending_edge_inserts.append({
+                        "from_node_id": target_id,
+                        "to_node_id": p_id,
+                        "distance_meters": dist_m,
+                        "base_minutes": round(dist_m / 78.0, 3),
+                        "bidirectional": True,
+                        "status": "open",
+                        "congestion_factor": 1.0,
+                        "weather_factor": 1.0,
+                        "properties": {
+                            "source": "geojson_attachment",
+                            "world_key": world_key,
+                            "path_kind": "attachment",
+                            "real_world": True,
+                        },
+                    })
+                    existing_edges.add(edge_key)
+                    edges_created += 1
+
+    if not dry_run:
+        chunk_size = 500
+        if pending_node_inserts:
+            for i in range(0, len(pending_node_inserts), chunk_size):
+                connection.execute(insert(spatial_nodes), pending_node_inserts[i : i + chunk_size])
+        if pending_node_updates:
+            update_params = [
+                {
+                    "b_code": item["code"],
+                    "name": item.get("name"),
+                    "node_type": item.get("node_type"),
+                    "parent_id": item.get("parent_id"),
+                    "world_key": item.get("world_key", world_key),
+                    "x": item.get("x"),
+                    "y": item.get("y"),
+                    "z": item.get("z"),
+                    "longitude": item.get("longitude"),
+                    "latitude": item.get("latitude"),
+                    "elevation_m": item.get("elevation_m", 0.0),
+                    "geometry_json": item.get("geometry_json"),
+                    "source_element_id": item.get("source_element_id"),
+                    "radius": item.get("radius"),
+                    "capacity": item.get("capacity"),
+                    "status": item.get("status"),
+                    "properties": item.get("properties"),
+                }
+                for item in pending_node_updates
+            ]
+            stmt = (
+                update(spatial_nodes)
+                .where(spatial_nodes.c.code == bindparam("b_code"))
+                .values(
+                    name=bindparam("name"),
+                    node_type=bindparam("node_type"),
+                    parent_id=bindparam("parent_id"),
+                    world_key=bindparam("world_key"),
+                    x=bindparam("x"),
+                    y=bindparam("y"),
+                    z=bindparam("z"),
+                    longitude=bindparam("longitude"),
+                    latitude=bindparam("latitude"),
+                    elevation_m=bindparam("elevation_m"),
+                    geometry_json=bindparam("geometry_json"),
+                    source_element_id=bindparam("source_element_id"),
+                    radius=bindparam("radius"),
+                    capacity=bindparam("capacity"),
+                    status=bindparam("status"),
+                    properties=bindparam("properties"),
+                )
+            )
+            for i in range(0, len(update_params), chunk_size):
+                connection.execute(stmt, update_params[i : i + chunk_size])
+        if pending_edge_inserts:
+            for i in range(0, len(pending_edge_inserts), chunk_size):
+                connection.execute(insert(spatial_edges), pending_edge_inserts[i : i + chunk_size])
+
+        batch_key = f"{world_key}_import_batch"
+        batch_values = {
+            "batch_key": batch_key,
+            "world_key": world_key,
+            "source": source,
+            "license": license_info,
+            "original_crs": "EPSG:4326",
+            "projection_meta": json.dumps({
+                "origin_lat": origin_lat,
+                "origin_lon": origin_lon,
+                "projector": "LocalProjector",
+                "earth_radius_m": EARTH_RADIUS_METERS,
+            }),
+            "nodes_count": len(imported_nodes),
+            "edges_count": edges_created,
+            "features_count": features_imported,
+            "quality_meta": json.dumps({
+                "features_seen": len(features),
+                "features_imported": features_imported,
+                "edges_skipped": edges_skipped,
+                "nodes_created": nodes_created,
+                "nodes_updated": nodes_updated,
+                "edges_created": edges_created,
+            }),
+        }
+        try:
+            spatial_import_batches.create(connection, checkfirst=True)
+            existing_batch = connection.execute(
+                select(spatial_import_batches.c.id).where(spatial_import_batches.c.batch_key == batch_key)
+            ).scalar()
+            if existing_batch:
+                connection.execute(
+                    update(spatial_import_batches)
+                    .where(spatial_import_batches.c.batch_key == batch_key)
+                    .values(**batch_values)
+                )
+            else:
+                connection.execute(insert(spatial_import_batches).values(**batch_values))
+        except Exception as err:
+            logger.warning("Optional spatial_import_batches record write skipped: %s", err)
+
+        sync_database_sequences(connection)
 
     return GeoImportSummary(
         world_key=world_key,
@@ -296,14 +537,23 @@ def polygon_feature_to_node(
     radius = max(2.0, min(80.0, math.sqrt(max(area, 1.0) / math.pi)))
     capacity = capacity_for_area(node_type, area, properties)
     footprint = [[round(x, 3), 0.0, round(z, 3)] for x, z in local_ring]
+    avg_lon = sum(float(p[0]) for p in rings[0]) / len(rings[0])
+    avg_lat = sum(float(p[1]) for p in rings[0]) / len(rings[0])
+    source_elem_id = str(properties.get("@id") or properties.get("id") or properties.get("osm_id") or "")
     return {
         "code": code,
         "name": name,
         "node_type": node_type,
         "parent_id": None,
+        "world_key": world_key,
         "x": centroid_x,
         "y": 0.0,
         "z": centroid_z,
+        "longitude": round(avg_lon, 7),
+        "latitude": round(avg_lat, 7),
+        "elevation_m": numeric_tag(properties.get("ele")) or 0.0,
+        "geometry_json": geometry,
+        "source_element_id": source_elem_id,
         "radius": radius,
         "capacity": capacity,
         "status": "open",
@@ -336,16 +586,24 @@ def point_feature_to_node(
     node_type = classify_point(properties)
     if not node_type:
         return None
-    x, z = projector.project(float(coordinates[0]), float(coordinates[1]))
+    lon, lat = float(coordinates[0]), float(coordinates[1])
+    x, z = projector.project(lon, lat)
     code = stable_code(world_key, node_type, properties, index)
+    source_elem_id = str(properties.get("@id") or properties.get("id") or properties.get("osm_id") or "")
     return {
         "code": code,
         "name": feature_name(properties, code),
         "node_type": node_type,
         "parent_id": None,
+        "world_key": world_key,
         "x": x,
         "y": numeric_tag(properties.get("ele")) or 0.0,
         "z": z,
+        "longitude": round(lon, 7),
+        "latitude": round(lat, 7),
+        "elevation_m": numeric_tag(properties.get("ele")) or 0.0,
+        "geometry_json": geometry,
+        "source_element_id": source_elem_id,
         "radius": 2.0,
         "capacity": capacity_for_point(node_type, properties),
         "status": "open",
@@ -360,31 +618,34 @@ def point_feature_to_node(
     }
 
 
-def path_feature_to_nodes_and_edge(
-    feature: dict[str, Any],
-    feature_index: int,
-    line_index: int,
+def make_path_point_node(
+    coord: list[Any],
     world_key: str,
-    line: list[Any],
     projector: LocalProjector,
+    properties: dict[str, Any],
     path_kind: str,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    properties = feature.get("properties") or {}
-    start = line[0]
-    end = line[-1]
-    start_x, start_z = projector.project(float(start[0]), float(start[1]))
-    end_x, end_z = projector.project(float(end[0]), float(end[1]))
-    distance = path_distance(line, projector)
-    base_minutes = max(0.1, distance / 78.0)
-    edge_node_type = f"{path_kind}_point"
-    base_code = stable_code(world_key, path_kind, properties, feature_index)
-    path_name = feature_name(properties, base_code)
-    from_code = short_code(f"{base_code}_a{line_index}")
-    to_code = short_code(f"{base_code}_b{line_index}")
-    node_common = {
-        "node_type": edge_node_type,
+    path_name: str,
+) -> dict[str, Any]:
+    lon, lat = float(coord[0]), float(coord[1])
+    coord_key = f"{round(lon, 7)},{round(lat, 7)}"
+    point_hash = hashlib.sha1(coord_key.encode("utf-8")).hexdigest()[:10]
+    code = short_code(f"{world_key}_pt_{point_hash}")
+    x, z = projector.project(lon, lat)
+    source_elem_id = str(properties.get("@id") or properties.get("id") or properties.get("osm_id") or "")
+    return {
+        "code": code,
+        "name": f"{path_name} 途经点" if path_name else f"路径节点 {code[-10:]}",
+        "node_type": "path_point",
         "parent_id": None,
-        "y": 0.0,
+        "world_key": world_key,
+        "x": round(x, 3),
+        "y": numeric_tag(properties.get("ele")) or 0.0,
+        "z": round(z, 3),
+        "longitude": round(lon, 7),
+        "latitude": round(lat, 7),
+        "elevation_m": numeric_tag(properties.get("ele")) or 0.0,
+        "geometry_json": {"type": "Point", "coordinates": [round(lon, 7), round(lat, 7)]},
+        "source_element_id": source_elem_id,
         "radius": 2.0,
         "capacity": 0,
         "status": "open",
@@ -393,47 +654,13 @@ def path_feature_to_nodes_and_edge(
             "source": "geojson",
             "world_key": world_key,
             "campus_key": world_key,
-            "osm_tags": compact_osm_tags(properties),
-            "path_name": path_name,
+            "lon": round(lon, 7),
+            "lat": round(lat, 7),
             "path_kind": path_kind,
+            "osm_tags": compact_osm_tags(properties),
             "real_world": True,
         },
     }
-    from_values = {
-        **node_common,
-        "code": from_code,
-        "name": f"{path_name} 起点",
-        "x": start_x,
-        "z": start_z,
-    }
-    to_values = {
-        **node_common,
-        "code": to_code,
-        "name": f"{path_name} 终点",
-        "x": end_x,
-        "z": end_z,
-    }
-    edge_values = {
-        "distance_meters": distance,
-        "base_minutes": base_minutes,
-        "bidirectional": not is_oneway(properties),
-        "status": "open",
-        "congestion_factor": 1.0,
-        "weather_factor": 1.0,
-        "properties": {
-            "source": "geojson",
-            "world_key": world_key,
-            "campus_key": world_key,
-            "osm_tags": compact_osm_tags(properties),
-            "path_kind": path_kind,
-            "geometry": [
-                [round(projector.project(float(point[0]), float(point[1]))[0], 3), 0.0, round(projector.project(float(point[0]), float(point[1]))[1], 3)]
-                for point in line
-            ],
-            "real_world": True,
-        },
-    }
-    return from_values, to_values, edge_values
 
 
 def polygon_rings(geometry: dict[str, Any]) -> list[list[Any]]:
@@ -640,3 +867,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--origin-lon", type=float)
     parser.add_argument("--dry-run", action="store_true")
     return parser
+
+
+def main():
+    from app.db.engine import create_database_engine
+    from app.db.metadata import metadata
+    parser = build_parser()
+    args = parser.parse_args()
+    world_key = args.world_key or args.campus_key or "tsinghua_main"
+    geojson = load_geojson(args.geojson_path)
+    engine = create_database_engine()
+    metadata.create_all(engine, tables=[spatial_nodes, spatial_edges, spatial_import_batches])
+    with engine.begin() as conn:
+        summary = import_real_world_geojson(
+            conn,
+            geojson,
+            world_key=world_key,
+            origin_lat=args.origin_lat,
+            origin_lon=args.origin_lon,
+            dry_run=args.dry_run,
+        )
+    print(json.dumps(summary.as_dict(), ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

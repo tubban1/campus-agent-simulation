@@ -6,6 +6,7 @@ from typing import Optional
 from datetime import datetime, timezone
 import hashlib
 from app.json_utils import json_dumps
+from app.world_runtime.clock import get_world_now
 
 
 CURRENCY = "campus_coin"
@@ -19,7 +20,7 @@ def _json(value) -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return get_world_now().isoformat()
 
 
 def _insert_actor(

@@ -46,6 +46,7 @@ def create_database_engine(database_url: Optional[str] = None) -> Engine:
     if url.startswith("sqlite"):
         options["connect_args"] = {"check_same_thread": False, "timeout": 30}
     else:
+        options["connect_args"] = {"prepare_threshold": None}
         options.update({"pool_size": 5, "max_overflow": 5})
 
     engine = create_engine(url, **options)

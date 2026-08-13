@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from math import dist
+from app.world_runtime.clock import get_world_now
 
 from app.adaptation.service import (
     constraint_runtime_available,
@@ -33,17 +34,17 @@ def _json_value(value, fallback):
         return fallback
 
 
+from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
+
+
 def _iso_datetime(value):
     if isinstance(value, datetime):
         parsed = value
     else:
-        try:
-            parsed = datetime.fromisoformat(str(value))
-        except (TypeError, ValueError):
-            return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+        parsed = parse_world_datetime(value)
+    if parsed is None:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=WORLD_TZ)
 
 
 def spatial_runtime_available(conn):
@@ -82,16 +83,123 @@ def _load_edges(conn):
     return edges
 
 
-def _destination_node(nodes, destination):
-    for node in nodes:
+LOCATION_CATEGORY_ALIASES = {
+    "宿舍区": ["宿舍", "紫荆公寓", "南区公寓", "双清公寓", "学生公寓", "dorm", "dormitory"],
+    "宿舍": ["宿舍区", "紫荆公寓", "南区公寓", "双清公寓", "学生公寓", "dorm"],
+    "食堂": ["清晏楼", "观愁园", "紫荆园", "桃李园", "听涛园", "玉树园", "食堂", "餐饮", "canteen", "dining"],
+    "图书馆": ["图书馆", "逸夫馆", "李文正馆", "凯风馆", "library"],
+    "教学楼": ["教学楼", "六教", "四教", "三教", "二教", "一教", "理科楼", "文科楼", "teaching"],
+    "商业街": ["商业街", "综合超市", "便利店", "CVS", "market", "shop"],
+    "操场": ["操场", "西大操场", "东大操场", "紫荆操场", "体育场", "playground", "stadium"],
+    "校务处": ["校务处", "主楼", "行政楼", "办公楼", "office", "admin"],
+}
+
+
+def _destination_candidates(nodes, destination, world_key=None):
+    destination_str = str(destination or "").strip()
+    if not destination_str:
+        return []
+
+    # First try exact numeric ID match
+    if destination_str.isdigit():
+        target_id = int(destination_str)
+        by_id = next((n for n in nodes if int(n["id"]) == target_id), None)
+        if by_id:
+            return [by_id]
+
+    # Filter candidate nodes by active world_key
+    candidate_nodes = nodes
+    if world_key:
+        filtered = [
+            n for n in nodes
+            if n.get("world_key") == world_key
+            or (n.get("properties") or {}).get("world_key") == world_key
+            or (n.get("code") and str(n["code"]).startswith(f"{world_key}_"))
+        ]
+        if filtered:
+            candidate_nodes = filtered
+
+    exact_matches = []
+    partial_matches = []
+    category_terms = LOCATION_CATEGORY_ALIASES.get(destination_str, [])
+
+    for node in candidate_nodes:
         properties = node.get("properties") or {}
-        if (
-            node.get("code") == destination
-            or node.get("name") == destination
-            or properties.get("location") == destination
-        ):
-            return node
-    return None
+        code = str(node.get("code") or "")
+        name = str(node.get("name") or "")
+        location = str(properties.get("location") or "")
+        if code == destination_str or name == destination_str or location == destination_str:
+            exact_matches.append(node)
+        elif destination_str in name or destination_str in location or (name and name in destination_str):
+            partial_matches.append(node)
+        elif category_terms and any(term in name or term in location for term in category_terms):
+            partial_matches.append(node)
+
+    matches = exact_matches or partial_matches
+    if not matches:
+        for node in nodes:
+            properties = node.get("properties") or {}
+            code = str(node.get("code") or "")
+            name = str(node.get("name") or "")
+            location = str(properties.get("location") or "")
+            if code == destination_str or name == destination_str or location == destination_str or destination_str in name:
+                matches.append(node)
+            elif category_terms and any(term in name or term in location for term in category_terms):
+                matches.append(node)
+
+    if not matches:
+        return []
+
+    # Keep exact names ahead of aliases, then prefer actual destinations over
+    # road points. Reachability is resolved by the caller using A*.
+    unique = {int(node["id"]): node for node in matches}
+    return sorted(
+        unique.values(),
+        key=lambda node: (
+            node not in exact_matches,
+            node.get("node_type") not in {"building", "poi", "outdoor_area"},
+            -int(node["id"]),
+        ),
+    )
+
+
+def _destination_node(nodes, destination, world_key=None):
+    candidates = _destination_candidates(nodes, destination, world_key=world_key)
+    return candidates[0] if candidates else None
+
+
+def _reachable_destination_route(
+    nodes,
+    edges,
+    start_node_id,
+    destination,
+    world_key,
+    speed_m_per_min,
+    accessibility_needs,
+):
+    """Choose a real destination candidate that is reachable from the Agent.
+
+    Imported maps can legitimately contain several locations matching a legacy
+    action label such as ``食堂``.  Selecting by database ID alone can choose a
+    disconnected building even when another real canteen is reachable.
+    """
+    candidates = _destination_candidates(nodes, destination, world_key=world_key)
+    if not candidates:
+        raise ValueError("地点不存在")
+    last_error = None
+    for candidate in candidates:
+        try:
+            return candidate, plan_route(
+                nodes,
+                edges,
+                start_node_id,
+                candidate["id"],
+                speed_m_per_min,
+                accessibility_needs,
+            )
+        except RouteNotFoundError as exc:
+            last_error = exc
+    raise last_error or RouteNotFoundError("No traversable route to destination")
 
 
 def _check_destination_admission(conn, target_node, world_time, resident_id):
@@ -346,14 +454,14 @@ def preview_route(conn, resident_id, destination):
         raise ValueError("空间运行时尚未初始化")
     context = _movement_context(conn, resident_id)
     nodes = _load_nodes(conn)
-    target = _destination_node(nodes, destination)
-    if not target:
-        raise ValueError("地点不存在")
-    route = plan_route(
+    curr_node = next((n for n in nodes if int(n["id"]) == int(context["current_node_id"])), None)
+    curr_world = (curr_node.get("world_key") if curr_node else None) or "tsinghua_main"
+    target, route = _reachable_destination_route(
         nodes,
         _load_edges(conn),
         context["current_node_id"],
-        target["id"],
+        destination,
+        curr_world,
         context["effective_speed_m_per_min"],
         context["accessibility_needs"],
     )
@@ -422,12 +530,21 @@ def start_spatial_movement(
 ):
     if not spatial_runtime_available(conn):
         return None
-    now = world_time or datetime.now(timezone.utc)
+    now = world_time or get_world_now()
     context = _movement_context(conn, resident_id)
     nodes = _load_nodes(conn)
-    target = _destination_node(nodes, destination)
-    if not target:
-        raise ValueError("地点不存在")
+    curr_node = next((n for n in nodes if int(n["id"]) == int(context["current_node_id"])), None)
+    curr_world = (curr_node.get("world_key") if curr_node else None) or "tsinghua_main"
+    edges = _load_edges(conn)
+    target, route = _reachable_destination_route(
+        nodes,
+        edges,
+        context["current_node_id"],
+        destination,
+        curr_world,
+        context["effective_speed_m_per_min"],
+        context["accessibility_needs"],
+    )
     admission = _evaluate_destination_constraint(
         conn,
         target,
@@ -451,14 +568,6 @@ def start_spatial_movement(
             "progress": float(context["progress"]),
         }
 
-    route = plan_route(
-        nodes,
-        _load_edges(conn),
-        context["current_node_id"],
-        target["id"],
-        context["effective_speed_m_per_min"],
-        context["accessibility_needs"],
-    )
     if not route["edge_ids"]:
         return {
             "message": "Agent 已在目标地点",
@@ -550,7 +659,7 @@ def pause_spatial_movement(conn, resident_id, reason="manual_pause"):
 
 
 def resume_spatial_movement(conn, resident_id, world_time=None):
-    now = world_time or datetime.now(timezone.utc)
+    now = world_time or get_world_now()
     row = conn.execute(
         """
         SELECT movement_status, target_node_id
