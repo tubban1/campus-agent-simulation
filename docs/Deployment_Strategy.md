@@ -659,17 +659,17 @@ autoDeployTrigger: checksPass
 
 ### P0：本月过渡必须完成
 
-- [ ] 记录 Supabase 账期结束日、数据库区域、大小和用量。
-- [ ] 开启 Supabase Spend Cap 和告警。
+- [ ] 记录 Supabase 账期结束日、数据库区域、大小和用量（需在控制台完成）。
+- [ ] 开启 Supabase Spend Cap 和告警（需在控制台完成）。
 - [ ] 保持 Hobby workspace；确认本阶段不需要 Pro。
 - [ ] 准备 Render 资源、规格、变量、域名和 secret 清单。
-- [ ] 增加 `/health/live` 和 `/health/ready`。
-- [ ] 将数据库初始化移动到 `preDeployCommand`。
-- [ ] 增加 GitHub Actions CI。
-- [ ] 增加 smoke test。
+- [x] 增加 `/health/live` 和 `/health/ready`。
+- [x] 将数据库初始化移动到 `preDeployCommand`。
+- [x] 增加 GitHub Actions CI。
+- [x] 增加 smoke test（`python scripts/smoke_test.py <base-url>`）。
 - [ ] Staging 设置 `WORLD_RUNTIME_AUTO_START=false`。
-- [ ] 非本地环境缺少 `ADMIN_TOKEN` 时拒绝启动。
-- [ ] 给写接口、模拟和 LLM 接口增加鉴权与限流。
+- [x] 非本地环境缺少 `ADMIN_TOKEN` 时拒绝启动。
+- [x] 给写接口、模拟和 LLM 接口增加鉴权与限流（非本地 `/api/*` 写请求）。
 - [ ] 第三周完成一次 Supabase -> 本地同版本 PostgreSQL 迁移演练。
 - [ ] 第四周创建 Project 的 Production、Staging Environment。
 - [ ] 第四周在项目所有者账号创建 Staging Web/DB，配置隔离、独立 secrets 和应用鉴权。
@@ -677,6 +677,19 @@ autoDeployTrigger: checksPass
 - [ ] 完成一次 Supabase -> Render Production DB 的可丢弃恢复复演。
 - [ ] 在续费前 5–7 天执行正式切换。
 - [ ] 2026-08-26 前后正式切流，稳定 24–48 小时后、最晚 2026-08-29 处理 Supabase 降级。
+
+### 仓库内 P0 已完成项（2026-08-08）
+
+- `render.yaml` 使用 `preDeployCommand` 执行受 PostgreSQL 锁保护的数据库准备，并以
+  `/health/ready` 作为平台健康检查。
+- `/health/live` 只报告进程存活；`/health/ready` 验证数据库连通、Alembic head 与基础表。
+- `APP_ENV=staging|production` 时必须设置 `ADMIN_TOKEN`；所有 `/api/*` 写请求要求 Bearer token，
+  并使用 `WRITE_RATE_LIMIT_PER_MINUTE` 做每客户端限流。
+- CI 运行全量 pytest；部署后执行 `python scripts/smoke_test.py https://<service-url>`。
+- 部署前执行 `python scripts/deployment_preflight.py --environment <staging|production> --check-database`；
+  它只校验环境与迁移版本，不输出 secret。
+- 创建 Staging 时必须显式设置 `APP_ENV=staging`、`WORLD_RUNNER_ENABLED=false`、
+  `WORLD_RUNTIME_AUTO_START=false`，并使用独立数据库和独立 `ADMIN_TOKEN`。
 
 ### P1：切换后一个月内完成
 

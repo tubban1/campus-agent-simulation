@@ -2,13 +2,23 @@ services:
   - type: web
     name: campus-agent-simulation
     runtime: python
-    buildCommand: pip install -r requirements.txt && python scripts/deploy_database.py --require-postgres
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: python scripts/deploy_database.py --require-postgres
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health/ready
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: DATABASE_URL
         sync: false
+      - key: APP_ENV
+        value: production
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: WORLD_RUNTIME_AUTO_START
+        value: "true"
+      - key: WORLD_RUNNER_ENABLED
+        value: "true"
       - key: LLM_API_KEY
         sync: false
       - key: LLM_API_URL

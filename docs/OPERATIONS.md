@@ -106,6 +106,12 @@ uvicorn app.main:app --reload
 
 World Runtime v1 让校园世界从“点击模拟一天”升级为后台 tick 驱动。普通用户默认只观察；admin 可以启动、暂停、手动推进 tick 和注入事件。
 
+实时 tick 默认运行核心路径：计划、环境同步、事件记录和 Agent 行动。市场、韧性、经济、制度、外部同步与扩展学习必须通过独立任务处理，避免长事务阻塞世界推进。需要逐项恢复时，使用以下开关并在每次变更后完成 tick 验证：
+
+- `WORLD_RUNTIME_EXTENDED_SUBSYSTEMS_ENABLED=true`：恢复扩展后处理。
+- `WORLD_RUNTIME_MARKET_TICK_ENABLED=true`：在扩展后处理已启用时恢复市场运行。
+- `WORLD_RUNTIME_RESILIENCE_TICK_ENABLED=true`：在扩展后处理已启用时恢复韧性与冲击运行。
+
 常用接口：
 
 - `GET /api/world/runtime`：运行状态、世界时间、最新 tick、模型预算。

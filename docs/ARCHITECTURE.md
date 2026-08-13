@@ -23,9 +23,26 @@ flowchart LR
 
 ## 后端模块
 
-`app/main.py` 是当前核心模块，包含：
+`app/main.py` 仍是运行时装配入口，但业务 API 已按领域拆出，当前职责应逐步收敛为：
 
-- FastAPI 应用和路由定义。
+- 创建 FastAPI 应用、注册领域路由和中间件。
+- 注册 `app.state` 服务回调，兼容旧运行时调用路径。
+- 提供尚未完成服务化的核心运行时桥接，最终应迁入对应 runtime/service。
+
+领域 API 路由包括：
+
+- `app/api/world_router.py`：世界状态、运行控制、快照、分支、环境配置和管理事件。
+- `app/api/agent_router.py`：Agent 查询、记忆、决策和工具行动。
+- `app/api/campus_router.py`：校园环境、空间、校园事件和政策。
+- `app/api/social_router.py`：社交、目标、群体和组织查询。
+- `app/api/lifecycle_router.py`：生命周期、观测会话和模拟入口。
+- `app/api/simulation_router.py`：后台模拟任务和流式进度。
+- `app/api/news_router.py`、`external_router.py`：校园新闻与外部资讯。
+- `app/api/research_router.py`、`system_router.py`：研究校准和系统能力。
+
+核心领域模块包含：
+
+- 尚未迁移完成的运行时装配和兼容实现。
 - 校园环境派生逻辑，包括真实时间、真实天气和模拟天气。
 - 空间系统，包括容量、开放时间、事件影响和可达性校验。
 - Agent 六模块状态构造。
@@ -40,7 +57,36 @@ flowchart LR
 
 `app/models.py` 保存基础表结构。`app/schema.py` 保存校园新版扩展表结构与默认环境。
 
-`tools/city_tools.py` 是历史命名遗留，但仍是基础行动工具层，提供移动、聊天、交易、库存、事件、记忆和关系更新。
+### 运行时依赖绑定规则
+
+过渡期的 `app/world_runtime/` 模块由 composition root 注入数据库、时钟和领域回调；它们不得反向导入
+`app.main` 或 FastAPI。绑定必须在公开入口调用前刷新，且不得覆盖模块自身的公开函数，避免 wrapper
+回注入导致递归。跨模块共享的事件解码等小型逻辑应留在所属领域模块内，不能为单一工具函数新增
+`main.py ↔ runtime` 循环导入。
+
+tick、调度和失败记录属于关键入口：它们必须使用同一连接抽象，因此 SQLite 的写锁重试只在 SQLite
+路径启用；PostgreSQL/Supabase 错误保持原始数据库语义并向上报告。每次迁移后至少验证状态读取、
+tick 推进、到期多尺度更新和失败落库。
+
+`tools/city_tools.py` 是历史命名遗留，但仍是基础行动工具层，提供移动、聊天、交易、库存、事件、记忆和关系更新。后续应逐步按 spatial、social、economy 和 memory 边界拆出，避免继续作为全局工具箱扩张。
+
+## World2 架构边界
+
+World2 的核心不是“Agent 调用 LLM 生成故事”，而是可复现的世界状态演化：
+
+```text
+WorldState + AgentState
+        ↓
+Perception / Decision / Rule Check
+        ↓
+ActionExecution
+        ↓
+WorldEvent + State Projection
+        ↓
+Next Tick / Metrics / Research Snapshot
+```
+
+LLM 只负责有限信息下的意图、解释和候选决策；空间准入、资源消耗、时间推进、社会影响、经济结算和事件写入必须由确定性规则完成。真实地理导入只有在进入路径规划、容量、准入和服务规则后，才算进入世界事实层，而不只是前端地图数据。
 
 `services/llm_service.py` 负责调用外部 LLM。当前请求体使用 Google Gemini `generateContent` 风格，header 为 `x-goog-api-key`。
 
