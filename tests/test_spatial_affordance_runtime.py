@@ -18,6 +18,7 @@ from app.spatial.affordance_service import (
     get_spatial_affordances,
     discover_agent_affordance_opportunities,
 )
+from app.spatial.facility_service import advance_facility_lifecycle, ensure_facility_states
 from app.world_runtime.action_execution import (
     get_current_spatial_action_context,
     process_world_agent_tick,
@@ -76,7 +77,7 @@ class SpatialAffordanceRuntimeTest(unittest.TestCase):
         import app.world_state.runtime_schema as rs
         rs.WORLD_SCHEMA_READY = False
         rs.ensure_world_runtime_tables(connection, allow_ddl=True)
-        main.ensure_space_system(connection, allow_ddl=True)
+        main.ensure_space_system(connection, allow_ddl=True, seed_demo_spaces=True)
         main.ensure_campus_state_table(connection, allow_ddl=True)
         connection.commit()
         connection.close()
@@ -112,6 +113,16 @@ class SpatialAffordanceRuntimeTest(unittest.TestCase):
         )
         connection.execute(
             """
+            INSERT OR IGNORE INTO spatial_resources
+            (node_id, resource_key, name, capacity, available_units, service_rate_per_hour, status, properties)
+            VALUES
+            (11, 'service_windows', '食堂服务窗口', 4, 4, 40.0, 'available', '{"actions": ["queue", "consume"]}'),
+            (11, 'meal_stock', '食堂餐食库存', 120, 120, 120.0, 'available', '{"actions": ["consume"]}'),
+            (11, 'water_stock', '食堂饮水库存', 80, 80, 80.0, 'available', '{"actions": ["hydrate"]}')
+            """
+        )
+        connection.execute(
+            """
             INSERT OR IGNORE INTO residents (id, name, role, personality, goal, money, location)
             VALUES (1, '测试Agent', '学生', '{}', '{}', 100, '紫荆宿舍楼')
             """
@@ -142,6 +153,13 @@ class SpatialAffordanceRuntimeTest(unittest.TestCase):
             (resident_id, base_speed_m_per_min, mobility_class, accessibility_needs, perception_radius_m, hearing_radius_m, version, source)
             VALUES (1, 80.0, 'standard', '{}', 100.0, 30.0, 1, 'system')
             """
+        )
+        ensure_facility_states(connection)
+        seed_spatial_affordances(connection)
+        # Recovery tests exercise stock/body settlement, not the separate
+        # service-window policy; keep their declared test provider open.
+        connection.execute(
+            "UPDATE spatial_facility_states SET open_hour = 0, close_hour = 24"
         )
         connection.commit()
         connection.close()
@@ -184,6 +202,38 @@ class SpatialAffordanceRuntimeTest(unittest.TestCase):
             context = get_current_spatial_action_context(conn, 1, "consume")
             self.assertEqual(context["node_id"], 11)
             self.assertEqual(context["node_name"], "清晏楼食堂")
+        finally:
+            conn.close()
+
+    def test_facility_lifecycle_restocks_and_repairs_declared_real_resource(self):
+        conn = self._test_get_connection()
+        try:
+            conn.execute("INSERT INTO residents (id, name, role, personality, goal, money, location) VALUES (2, '测试后勤', '校园后勤', '{}', '{}', 100, '清晏楼食堂')")
+            conn.execute("INSERT INTO agent_spatial_states (resident_id, current_node_id, x, y, z, facing_x, facing_z, movement_status, progress, path, path_index, route_distance_meters, remaining_distance_meters, updated_tick, version, branch_key, replan_count, last_replan_reason) VALUES (2, 11, 20, 0, 0, 0, 1, 'idle', 1, '[]', 0, 0, 0, 0, 1, 'main', 0, '')")
+            conn.execute(
+                """UPDATE spatial_facility_states
+                   SET inventory_units = 0, last_replenished_day = 1,
+                       condition = 10, maintenance_status = 'operational'
+                   WHERE resource_id = (SELECT id FROM spatial_resources
+                                        WHERE node_id = 11 AND resource_key = 'meal_stock')"""
+            )
+            first = advance_facility_lifecycle(conn, day=2, hour=12)
+            self.assertGreater(first["work_orders_created"], 0)
+            second = advance_facility_lifecycle(conn, day=2, hour=12)
+            state = conn.execute(
+                """SELECT f.inventory_units, f.inventory_capacity, f.maintenance_status
+                   FROM spatial_facility_states f JOIN spatial_resources r ON r.id = f.resource_id
+                   WHERE r.node_id = 11 AND r.resource_key = 'meal_stock'"""
+            ).fetchone()
+            self.assertGreater(second["work_orders_completed"], 0)
+            self.assertEqual(state["inventory_units"], state["inventory_capacity"])
+            repaired = conn.execute(
+                """SELECT condition, maintenance_status FROM spatial_facility_states f
+                   JOIN spatial_resources r ON r.id = f.resource_id
+                   WHERE r.node_id = 11 AND r.resource_key = 'meal_stock'"""
+            ).fetchone()
+            self.assertEqual(repaired["maintenance_status"], "operational")
+            self.assertGreaterEqual(repaired["condition"], 20)
         finally:
             conn.close()
 

@@ -108,6 +108,12 @@ class RuntimeSchemaSafetyTest(unittest.TestCase):
         thread_factory.assert_not_called()
         self.assertIsNone(main.WORLD_RUNNER_THREAD)
 
+    def test_only_world_tick_is_a_runtime_write_entrypoint(self):
+        paths = {route.path for route in main.app.routes}
+        self.assertIn("/api/admin/world/tick", paths)
+        self.assertFalse(any(path.startswith("/api/simulate") for path in paths))
+        self.assertFalse(hasattr(main, "run_lifecycle_step"))
+
     def test_read_world_runtime_does_not_write(self):
         conn = self._prepared_connection()
         statements = []

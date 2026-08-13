@@ -851,7 +851,7 @@ function renderNewspaper() {
   const openSpaces = spaces.filter(space => (space.effective_status || space.status) === "开放").length;
   const isToday = Number(day) === Number(WorldStore.newspaperArchive.current_day || WorldStore.world?.current_day);
   const editionLabel = isToday ? "今日滚动版" : "归档日报";
-  const editionContext = isToday ? (env.real_date || "校园封闭世界") : "仿真归档";
+  const editionContext = isToday ? (env.real_date || "校园世界") : "仿真归档";
 
   $("paperDate").textContent = `第 ${day} 天 · ${editionLabel} · ${editionContext} · 每日一期`;
   if ($("paperPrev")) $("paperPrev").disabled = !WorldStore.newspaperArchive.previous_day;

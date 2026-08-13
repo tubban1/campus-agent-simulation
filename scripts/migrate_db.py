@@ -1,4 +1,4 @@
-"""Stamp a legacy campus database and apply all Alembic migrations."""
+"""Apply the current migrations to the sole supported fresh-world schema."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from alembic import command
+from sqlalchemy import text
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -42,11 +43,10 @@ def migrate_database(check_only: bool = False) -> dict:
             }
         if not tables:
             raise RuntimeError(
-                "Database has no campus schema "
+            "Database has no fresh-world schema "
                 f"(dialect={target['dialect']}, database={target['database']}, "
                 f"schema={target['schema'] or 'default'}). "
-                "Run scripts/init_campus_safe.py "
-                "and scripts/prepare_legacy_schema.py before the baseline migration."
+                "Run scripts/bootstrap_fresh_world.py before migrations."
             )
         if current is None:
             missing = sorted(BASELINE_REQUIRED_TABLES - set(tables))
@@ -54,7 +54,20 @@ def migrate_database(check_only: bool = False) -> dict:
                 raise RuntimeError(
                     "Database is missing required baseline tables: "
                     + ", ".join(missing)
-                    + ". Run scripts/prepare_legacy_schema.py first."
+                    + ". Run scripts/bootstrap_fresh_world.py first."
+                )
+            with engine.connect() as connection:
+                marker = connection.execute(
+                    text(
+                        "SELECT value FROM simulation_state "
+                        "WHERE key = 'fresh_world_bootstrap'"
+                    )
+                ).scalar()
+            if marker != "1":
+                raise RuntimeError(
+                    "Database is not a freshly bootstrapped world. Refusing "
+                    "to stamp or upgrade an existing schema; rebuild it with "
+                    "scripts/reset_fresh_world.py."
                 )
             command.stamp(config, BASELINE_REVISION)
         command.upgrade(config, "head")

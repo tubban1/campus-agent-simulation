@@ -25,6 +25,7 @@ from app.spatial.schemas import (
     RoutePlanRequest,
     SceneGraphResponse,
     SetDestinationRequest,
+    PhysicalStateMutationRequest,
     SpatialResourcesResponse,
     SpatialWorldsResponse,
     TrajectoryResponse,
@@ -72,6 +73,29 @@ def get_spatial_scene(
             max_z=max_z,
         )
     )
+
+
+@router.get("/api/spatial/physical-states")
+def get_spatial_physical_states(world_key: Optional[str] = Query(default=None)):
+    """Current factual physical layer used by map rendering and perception."""
+    return with_spatial_service(lambda service: service.get_physical_states(world_key=world_key))
+
+
+@router.post("/api/spatial/physical-states/mutate")
+def mutate_spatial_physical_state(payload: PhysicalStateMutationRequest):
+    from app.spatial.physical_state_service import apply_spatial_physical_event
+    try:
+        with get_connection() as connection:
+            result = apply_spatial_physical_event(connection, **payload.model_dump(exclude={"title"}))
+            append_world_event(
+                connection, event_type="spatial_physical_state_changed", title=payload.title,
+                content=f"空间物理状态调整为 {payload.access_status}",
+                location=payload.world_key, payload=result, source_type="map_interaction",
+            )
+            connection.commit()
+            return result
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/api/spatial/worlds", response_model=SpatialWorldsResponse)

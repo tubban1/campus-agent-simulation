@@ -190,15 +190,8 @@ curl -X POST http://127.0.0.1:8000/api/tools/buy-sell \
 | POST | `/api/agent/decide/{resident_id}` | 只生成单个 Agent 决策 |
 | POST | `/api/agent/act/{resident_id}` | 决策并执行单个 Agent 行动 |
 | POST | `/api/agent/act-all` | 所有 Agent 轮流决策并执行 |
-| POST | `/api/simulate/lifecycle-step/{resident_id}` | 单个 Agent 完整生命周期 |
-| POST | `/api/simulate/lifecycle-round` | 所有 Agent 完整生命周期，不推进天数 |
-| POST | `/api/simulate/ai-day` | 旧调试入口：推进到下一天，更新环境，所有 Agent 行动，发布日报 |
 
-新主体验使用 World Runtime。旧入口仍可用于调试：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/simulate/ai-day
-```
+世界时间只通过 `/api/admin/world/tick` 或后台 runner 推进；不再提供会绕过真实地理和物理结算的批量模拟入口。
 
 ## 社交、目标与组织
 

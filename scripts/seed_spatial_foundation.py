@@ -1,6 +1,7 @@
 """Seed the stable campus topology and backfill Agent spatial truth."""
 
 from pathlib import Path
+import os
 import sys
 
 
@@ -15,7 +16,10 @@ def main() -> None:
     engine = create_database_engine()
     try:
         with engine.begin() as connection:
-            result = seed_spatial_foundation(connection)
+            result = seed_spatial_foundation(
+                connection,
+                real_world_key=os.getenv("INITIAL_WORLD_KEY") or None,
+            )
     finally:
         engine.dispose()
     print(

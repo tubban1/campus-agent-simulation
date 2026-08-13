@@ -2,7 +2,7 @@
 
 ## 系统定位
 
-本项目是一个“校园封闭世界”多智能体沙盘。它不是聊天机器人外壳，而是一个可持续演化的小型世界模型：
+本项目是一个基于真实地理的校园多智能体世界。它不是聊天机器人外壳，而是一个可持续演化的小型世界模型：
 
 1. 校园环境提供时间、天气、学期阶段、拥挤度、资源压力和活动事件。
 2. Agent 拥有身份、目标、精力、时间预算、日程、关系、记忆和库存。
@@ -23,11 +23,11 @@ flowchart LR
 
 ## 后端模块
 
-`app/main.py` 仍是运行时装配入口，但业务 API 已按领域拆出，当前职责应逐步收敛为：
+`app/main.py` 是运行时装配入口，职责限定为：
 
 - 创建 FastAPI 应用、注册领域路由和中间件。
-- 注册 `app.state` 服务回调，兼容旧运行时调用路径。
-- 提供尚未完成服务化的核心运行时桥接，最终应迁入对应 runtime/service。
+- 注册显式的 `app.state` 服务回调，供领域 router 调用。
+- 挂接 ASGI lifespan；后台世界 runner 只能在该生命周期内运行。
 
 领域 API 路由包括：
 
@@ -35,14 +35,11 @@ flowchart LR
 - `app/api/agent_router.py`：Agent 查询、记忆、决策和工具行动。
 - `app/api/campus_router.py`：校园环境、空间、校园事件和政策。
 - `app/api/social_router.py`：社交、目标、群体和组织查询。
-- `app/api/lifecycle_router.py`：生命周期、观测会话和模拟入口。
-- `app/api/simulation_router.py`：后台模拟任务和流式进度。
+- `app/api/lifecycle_router.py`：观测会话与生命历程读取。
 - `app/api/news_router.py`、`external_router.py`：校园新闻与外部资讯。
 - `app/api/research_router.py`、`system_router.py`：研究校准和系统能力。
 
 核心领域模块包含：
-
-- 尚未迁移完成的运行时装配和兼容实现。
 - 校园环境派生逻辑，包括真实时间、真实天气和模拟天气。
 - 空间系统，包括容量、开放时间、事件影响和可达性校验。
 - Agent 六模块状态构造。
@@ -59,7 +56,7 @@ flowchart LR
 
 ### 运行时依赖绑定规则
 
-过渡期的 `app/world_runtime/` 模块由 composition root 注入数据库、时钟和领域回调；它们不得反向导入
+`app/world_runtime/` 模块由 composition root 注入数据库、时钟和领域回调；它们不得反向导入
 `app.main` 或 FastAPI。绑定必须在公开入口调用前刷新，且不得覆盖模块自身的公开函数，避免 wrapper
 回注入导致递归。跨模块共享的事件解码等小型逻辑应留在所属领域模块内，不能为单一工具函数新增
 `main.py ↔ runtime` 循环导入。
@@ -92,7 +89,7 @@ LLM 只负责有限信息下的意图、解释和候选决策；空间准入、�
 
 ## Agent 生命周期
 
-单个 Agent 的完整流程由 `run_lifecycle_step()` 执行：
+单个 Agent 的完整流程由 world tick 的行动执行器推进：
 
 ```mermaid
 flowchart TD
@@ -136,33 +133,11 @@ flowchart TD
 
 ## 空间模型
 
-`campus_spaces` 定义七个固定空间：
-
-- 宿舍区
-- 教学楼
-- 图书馆
-- 食堂
-- 操场
-- 商业街
-- 校务处
-
-`get_space_snapshot()` 会结合空间容量、开放时间、当前小时、环境拥挤度、实际 Agent 数量和活跃事件，计算 `effective_status`、`available_slots`、`crowd_percent` 等运行状态。
+真实世界以导入的 `spatial_nodes`、`spatial_edges` 和 `spatial_resources` 为唯一地理事实。`spatial_physical_states` 和 `spatial_facility_states` 持久化天气、人流、噪声、照明、道路状态、库存、服务窗口、维修状态和容量；`get_space_snapshot()` 仅投影这些真实 POI 的当前状态。
 
 ## 数据演进策略
 
-旧业务表仍保留部分“启动/使用时补表补列”的兼容逻辑：
-
-- `ensure_campus_state_table()`
-- `ensure_space_system()`
-- `ensure_agent_profile_table()`
-- `ensure_social_system_tables()`
-- `ensure_external_information_system()`
-- `ensure_memory_columns()`
-- `ensure_world_runtime_tables()`：同时补齐环境配置、事件谱系、实验运行和世界快照字段
-
-这些函数只负责旧结构兼容。空间、身体、感知、能力、经济和组织运行等新基础设施
-统一通过 Alembic migration 演进；部署固定执行安全初始化、旧 schema 补齐、
-`upgrade head` 和各领域幂等种子。
+所有生产 schema 变化统一通过 Alembic migration 演进。`app/db/bootstrap_schema.py` 的 schema guard 只服务于隔离测试和显式 fresh-world bootstrap；Web 服务不会在启动或请求期间建表、补列或修复旧 schema。部署固定执行 `upgrade head`、真实地理导入和各领域幂等种子。
 
 ## 阶段 0 环境底座
 
@@ -234,13 +209,7 @@ Agent 涌现、群体模式识别、编辑 Agent 与制度反馈的后续演进�
 - `/api/agents/{id}/timeline`
 - `/api/agents/{id}/simulation-logs`
 
-## 历史命名说明
+## 新世界边界
 
-项目早期似乎从“虚拟城市/成都”示例演进而来，因此还存在：
-
-- `city_events`
-- `city_tools.py`
-- `data/city.db`
-- `scripts/init_db.py`
-
-当前产品语义已经转为校园沙盘。维护时优先参考 `scripts/init_campus.py`、`app/schema.py` 和 `app/main.py` 中的校园系统。
+新部署只从版本化真实 GeoJSON 建立空间真值；不支持旧城市示例、默认示范校园或历史数据库升级。
+维护时优先参考 `scripts/bootstrap_fresh_world.py`、`scripts/import_tsinghua_world.py` 与领域服务。

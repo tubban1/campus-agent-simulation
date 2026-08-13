@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from alembic import command
+from sqlalchemy import text
 
 import app.main as main
 from app.db import create_database_engine
@@ -15,6 +16,11 @@ from app.models import SCHEMA_SQL
 from app.spatial.geo_importer import import_real_world_geojson
 from app.spatial.repository import SpatialRepository
 from app.spatial.service import SpatialService
+from app.spatial.physical_state_service import (
+    apply_spatial_physical_event,
+    refresh_spatial_physical_states,
+)
+from app.spatial.location_catalog import best_real_location, rank_real_location_options, real_location_options
 
 
 class SpatialOpenWorldTest(unittest.TestCase):
@@ -61,7 +67,7 @@ class SpatialOpenWorldTest(unittest.TestCase):
         import app.world_state.runtime_schema as rs
         rs.WORLD_SCHEMA_READY = False
         rs.ensure_world_runtime_tables(connection, allow_ddl=True)
-        main.ensure_space_system(connection, allow_ddl=True)
+        main.ensure_space_system(connection, allow_ddl=True, seed_demo_spaces=True)
         connection.commit()
         connection.close()
 
@@ -222,6 +228,41 @@ class SpatialOpenWorldTest(unittest.TestCase):
             self.assertTrue(len(scene["nodes"]) >= 1)
             self.assertIsInstance(scene["wgs84_bounds"], list)
             self.assertEqual(len(scene["wgs84_bounds"]), 4)
+
+    def test_real_location_catalog_returns_imported_pois_not_demo_labels(self):
+        from sqlalchemy import text
+
+        sample_geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"@id": "node/501", "amenity": "restaurant", "name": "清晏楼餐厅"},
+                    "geometry": {"type": "Point", "coordinates": [116.321, 40.001]},
+                },
+                {
+                    "type": "Feature",
+                    "properties": {"@id": "node/502", "amenity": "library", "name": "逸夫图书馆"},
+                    "geometry": {"type": "Point", "coordinates": [116.322, 40.001]},
+                },
+                {
+                    "type": "Feature",
+                    "properties": {"@id": "way/503", "building": "residential", "name": "双清学生公寓"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[116.323, 40.001], [116.3232, 40.001], [116.3232, 40.0012], [116.323, 40.0012], [116.323, 40.001]]]},
+                },
+            ],
+        }
+        with self.engine.begin() as conn:
+            import_real_world_geojson(conn, sample_geojson, world_key="tsinghua_main")
+            self.assertEqual(best_real_location(conn, "consume"), "清晏楼餐厅")
+            self.assertEqual(best_real_location(conn, "attend_class"), "逸夫图书馆")
+            self.assertEqual(best_real_location(conn, "rest"), "双清学生公寓")
+            options = [name for name, _ in real_location_options(conn, "大二学生", 12)]
+            ranked = rank_real_location_options(conn, 901, "consume", hour=12)
+        self.assertIn("清晏楼餐厅", options)
+        self.assertNotIn("食堂", options)
+        self.assertEqual(ranked[0]["location"], "清晏楼餐厅")
+        self.assertIn("travel_minutes_estimate", ranked[0]["reasons"])
 
     def test_multi_world_importer_road_attachment_isolation(self):
         world_a_geojson = {
@@ -384,6 +425,77 @@ class SpatialOpenWorldTest(unittest.TestCase):
         matched_event = next((e for e in events_list if e.get("id") == res["event_id"] or e.get("title") == "测试物理波动事件"), None)
         self.assertIsNotNone(matched_event, "Map event must be readable from /api/world/events")
         self.assertEqual(matched_event.get("title"), "测试物理波动事件")
+
+    def test_scene_exposes_factual_node_physical_state(self):
+        """The map must receive physical facts, not a time-slot crowd template."""
+        from sqlalchemy import text
+
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO spatial_nodes
+                  (code, name, node_type, world_key, x, y, z, radius, capacity, status, properties)
+                VALUES ('physical-test-node', '物理状态测试楼', 'building', 'test_world', 1, 0, 1, 8, 20, 'closed', '{}')
+            """))
+            refreshed = refresh_spatial_physical_states(
+                conn, world_key="test_world",
+                environment={"temperature": 31, "rainfall": 4, "weather": "小雨"},
+                observed_at="2026-08-13T02:15:00+00:00",
+            )
+            self.assertEqual(refreshed["updated"], 1)
+
+        with self.engine.connect() as conn:
+            scene = SpatialService(SpatialRepository(conn)).get_scene_graph(world_key="test_world")
+        self.assertEqual(len(scene["physical_states"]), 1)
+        state = scene["physical_states"][0]
+        self.assertEqual(state["access_status"], "closed")
+        self.assertEqual(state["temperature_c"], 31.0)
+        self.assertEqual(state["precipitation"], 4.0)
+        self.assertEqual(state["illumination"], 0.25)
+
+    def test_manual_physical_closure_survives_weather_refresh(self):
+        from sqlalchemy import text
+
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO spatial_nodes
+                  (code, name, node_type, world_key, x, y, z, radius, capacity, status, properties)
+                VALUES ('closure-test-node', '封闭测试楼', 'building', 'test_world', 2, 0, 2, 8, 20, 'open', '{}')
+            """))
+            node_id = conn.execute(text("SELECT id FROM spatial_nodes WHERE code = 'closure-test-node'")).scalar_one()
+            refresh_spatial_physical_states(conn, world_key="test_world", environment={})
+            mutation = apply_spatial_physical_event(
+                conn, world_key="test_world", node_id=node_id,
+                access_status="closed", duration_minutes=30,
+            )
+            self.assertEqual(mutation["access_status"], "closed")
+            refresh_spatial_physical_states(conn, world_key="test_world", environment={"temperature": 20})
+
+        with self.engine.connect() as conn:
+            state = conn.execute(text("SELECT access_status, source FROM spatial_physical_states WHERE node_id = :id"), {"id": node_id}).mappings().one()
+        self.assertEqual(state["access_status"], "closed")
+        self.assertEqual(state["source"], "map_event")
+
+    def test_edge_closure_is_dynamic_and_changes_route_input(self):
+        from app.spatial.runtime import _load_edges
+        from sqlalchemy import text
+
+        with self.engine.begin() as conn:
+            for code, x in (("edge-a", 0), ("edge-b", 10)):
+                conn.execute(text("""
+                    INSERT INTO spatial_nodes
+                    (code, name, node_type, world_key, x, y, z, radius, capacity, status, properties)
+                    VALUES (:code, :code, 'poi', 'edge_world', :x, 0, 0, 2, 1, 'open', '{}')
+                """), {"code": code, "x": x})
+            ids = dict(conn.execute(text("SELECT code, id FROM spatial_nodes WHERE world_key = 'edge_world'")).all())
+            conn.execute(text("""
+                INSERT INTO spatial_edges
+                (from_node_id, to_node_id, distance_meters, base_minutes, bidirectional, status, congestion_factor, weather_factor, properties)
+                VALUES (:a, :b, 10, 1, 1, 'open', 1, 1, '{}')
+            """), {"a": ids["edge-a"], "b": ids["edge-b"]})
+            edge_id = conn.execute(text("SELECT id FROM spatial_edges WHERE from_node_id = :id"), {"id": ids["edge-a"]}).scalar_one()
+            apply_spatial_physical_event(conn, world_key="edge_world", edge_id=edge_id, access_status="closed", duration_minutes=30)
+            edge = next(item for item in _load_edges(conn) if item["id"] == edge_id)
+        self.assertEqual(edge["status"], "closed")
 
 
 if __name__ == "__main__":

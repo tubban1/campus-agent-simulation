@@ -2,11 +2,20 @@
 
 from dataclasses import dataclass
 from typing import Any, Mapping
+import logging
 import random
 
 from tools.city_tools import VALID_LOCATIONS
+from app.spatial.location_catalog import (
+    best_real_location,
+    is_real_world_location,
+    rank_real_location_options,
+    real_location_options,
+    supports_action as real_location_supports_action,
+)
 
 _MODULE_NAME = __name__
+logger = logging.getLogger(__name__)
 _OVERRIDABLE_DEFAULTS = {
     "is_location_open_at_hour",
     "realistic_location_for_context",
@@ -79,6 +88,99 @@ def is_residential_location(location):
     return text == "宿舍区" or any(
         token in text for token in ("宿舍", "公寓", "住宅", "residence")
     )
+
+
+_PHYSICAL_SPACE_PATTERNS = {
+    "canteen_crowd": ("食堂", "餐厅", "餐饮", "清晏楼", "清芬", "观畴", "紫荆园", "桃李园"),
+    "dorm_crowd": ("宿舍", "公寓", "寝室", "住宅", "双清"),
+    "library_crowd": ("图书馆", "阅览"),
+    "classroom_crowd": ("教学", "教室", "学堂", "实验", "科研"),
+    "playground_crowd": ("操场", "体育", "球场", "运动"),
+    "commercial_crowd": ("商业", "商店", "超市", "咖啡", "服务"),
+}
+
+
+def derive_environment_from_spatial_facts(conn, values):
+    """Replace crowd templates with observed location, queue and service facts.
+
+    This intentionally does not invent a rush-hour percentage. Every category
+    starts at zero; a category with no mapped real spatial entity or no Agent
+    occupancy remains zero rather than inheriting a time-slot template.
+    """
+    rows = conn.execute(
+        """
+        SELECT n.name, n.node_type, n.capacity, n.status,
+               COUNT(s.resident_id) AS occupancy
+        FROM spatial_nodes n
+        LEFT JOIN agent_spatial_states s ON s.current_node_id = n.id
+        GROUP BY n.id, n.name, n.node_type, n.capacity, n.status
+        """
+    ).fetchall()
+    movement = conn.execute(
+        """SELECT COUNT(*) AS total,
+                  SUM(CASE WHEN movement_status NOT IN ('idle', 'arrived') THEN 1 ELSE 0 END) AS moving
+           FROM agent_spatial_states"""
+    ).fetchone()
+    queue = conn.execute(
+        "SELECT COUNT(*) AS waiting FROM spatial_admission_queue WHERE status IN ('waiting', 'queued')"
+    ).fetchone()
+    resources = conn.execute(
+        """SELECT COUNT(*) AS total,
+                  SUM(CASE WHEN status NOT IN ('open', 'available', '开放') OR available_units <= 0 THEN 1 ELSE 0 END) AS unavailable
+           FROM spatial_resources"""
+    ).fetchone()
+
+    aggregates = {key: {"occupancy": 0, "capacity": 0, "seen": 0, "peak_ratio": 0.0} for key in _PHYSICAL_SPACE_PATTERNS}
+    for row in rows:
+        name = str(row["name"] or "")
+        node_type = str(row["node_type"] or "")
+        occupancy = int(row["occupancy"] or 0)
+        capacity = max(0, int(row["capacity"] or 0))
+        for field, patterns in _PHYSICAL_SPACE_PATTERNS.items():
+            if any(token in name for token in patterns):
+                data = aggregates[field]
+                data["occupancy"] += occupancy
+                data["capacity"] += capacity
+                data["seen"] += 1
+                data["peak_ratio"] = max(data["peak_ratio"], occupancy / max(1, capacity or 20))
+                break
+        else:
+            if node_type in {"classroom", "library", "canteen", "dorm"}:
+                field = {"classroom": "classroom_crowd", "library": "library_crowd", "canteen": "canteen_crowd", "dorm": "dorm_crowd"}[node_type]
+                data = aggregates[field]
+                data["occupancy"] += occupancy
+                data["capacity"] += capacity
+                data["seen"] += 1
+                data["peak_ratio"] = max(data["peak_ratio"], occupancy / max(1, capacity or 20))
+
+    factual = dict(values)
+    for field in _PHYSICAL_SPACE_PATTERNS:
+        factual[field] = 0
+    percentages = []
+    for field, data in aggregates.items():
+        if not data["seen"]:
+            continue
+        # Unknown OSM capacity must not make a present Agent disappear.  A
+        # conservative per-place fallback makes the uncertainty visible while
+        # retaining the observation-driven numerator.
+        effective_capacity = data["capacity"] or max(1, data["seen"] * 20)
+        ratio = max(data["peak_ratio"], data["occupancy"] / effective_capacity)
+        ratio = min(1.0, ratio)
+        factual[field] = round(ratio * 100)
+        percentages.append(factual[field])
+
+    total = int(movement["total"] or 0) if movement else 0
+    moving = int(movement["moving"] or 0) if movement and movement["moving"] is not None else 0
+    waiting = int(queue["waiting"] or 0) if queue else 0
+    resource_total = int(resources["total"] or 0) if resources else 0
+    unavailable = int(resources["unavailable"] or 0) if resources and resources["unavailable"] is not None else 0
+    factual["campus_flow"] = round(min(100, (moving + waiting) * 100 / max(1, total)))
+    factual["resource_pressure"] = round(min(100, (unavailable * 100 / max(1, resource_total)) + waiting * 8))
+    factual["traffic_status"] = "拥堵" if factual["campus_flow"] >= 70 else "正常"
+    factual["network_status"] = "拥堵" if factual.get("dorm_crowd", 0) >= 75 else "稳定"
+    factual["spatial_facts_source"] = "agent_presence_queue_resource"
+    factual["spatial_observed_agent_count"] = total
+    return factual
 
 
 def get_agent_module_state(conn, resident_id):
@@ -183,6 +285,16 @@ def location_options_for_context(role, hour, weather="", current_location="", co
     group = role_group(role)
     weather_text = str(weather or "")
     rainy = any(token in weather_text for token in ("雨", "雷", "雪", "雾", "大风"))
+    if conn:
+        concrete_options = real_location_options(
+            conn,
+            role,
+            hour,
+            current_location=current_location,
+            weather=weather_text,
+        )
+        if concrete_options:
+            return concrete_options
     if 0 <= hour < 6:
         base = {
             "student": [("宿舍区", 82), ("图书馆", 8), ("教学楼", 5), ("操场", 2), (current_location, 3)],
@@ -291,13 +403,27 @@ def apply_realism_constraints_to_decision(conn, agent, decision, perception, wor
         "request_leave": "校务处",
     }
     if action in action_location_defaults:
-        preferred = action_location_defaults[action]
-        if is_location_open_at_hour(preferred, hour):
-            destination = preferred
+        ranked = rank_real_location_options(
+            conn, agent.get("id"), action, hour=hour, weather=weather
+        ) if agent.get("id") else []
+        decision["location_candidates"] = ranked[:5]
+        concrete = next((item["location"] for item in ranked if item["available"]), None)
+        concrete = concrete or best_real_location(conn, action, current_location=agent.get("location", ""))
+        if concrete:
+            destination = concrete
+        else:
+            preferred = action_location_defaults[action]
+            if is_location_open_at_hour(preferred, hour):
+                destination = preferred
 
-    if destination not in VALID_LOCATIONS and not is_residential_location(destination):
+    destination_is_real = is_real_world_location(conn, destination)
+    if destination not in VALID_LOCATIONS and not is_residential_location(destination) and not destination_is_real:
         notes.append("目的地不存在，改为当前位置观察")
-        destination = agent["location"] if agent["location"] in VALID_LOCATIONS else "宿舍区"
+        destination = (
+            agent["location"]
+            if agent["location"] in VALID_LOCATIONS or is_real_world_location(conn, agent["location"])
+            else "宿舍区"
+        )
         action = "observe"
 
     if destination in VALID_LOCATIONS and not is_location_open_at_hour(destination, hour):
@@ -315,10 +441,11 @@ def apply_realism_constraints_to_decision(conn, agent, decision, perception, wor
         decision["goal"] = "夜间休息，恢复精力"
         notes.append("深夜处于住宿节点，优先休息恢复")
     elif 0 <= hour < 6 and role_group(role) == "student":
-        if destination != "宿舍区" and random.random() < 0.88:
+        night_rest = best_real_location(conn, "rest", current_location=agent.get("location", ""))
+        if destination != (night_rest or "宿舍区") and random.random() < 0.88:
             notes.append("深夜学生活动概率较低，回到宿舍区休息")
-            destination = "宿舍区"
-            action = "reflect"
+            destination = night_rest or "宿舍区"
+            action = "rest"
 
     if (destination in {"操场", "商业街"} or "露天" in destination) and any(token in str(weather or "") for token in ("雨", "雷", "雪", "大风", "暴雨", "大雨", "中雨", "严酷", "低落")):
         # Severe weather should be an exceptional reason to remain outdoors,
@@ -336,16 +463,19 @@ def apply_realism_constraints_to_decision(conn, agent, decision, perception, wor
         action = "observe"
         notes.append("已在目标地点，改为现场观察")
 
-    if action == "attend_class" and destination != "教学楼":
+    if action == "attend_class" and destination != "教学楼" and not real_location_supports_action(destination, action):
         action = "observe"
         notes.append("课程活动无法在当前空间完成，改为观察学习状态")
-    if action in {"queue", "consume"} and destination not in {"食堂", "商业街"}:
+    if action in {"queue", "consume"} and destination not in {"食堂", "商业街"} and not real_location_supports_action(destination, action):
         action = "observe"
         notes.append("消费/排队行为与当前空间不匹配，改为观察")
-    if action == "club_activity" and destination != "操场":
+    if action == "club_activity" and destination != "操场" and not real_location_supports_action(destination, action):
         action = "chat"
         notes.append("社团活动转为室内轻量交流")
-    if action == "request_leave" and not is_location_open_at_hour("校务处", hour):
+    if action == "request_leave" and not (
+        real_location_supports_action(destination, action)
+        or is_location_open_at_hour("校务处", hour)
+    ):
         action = "reflect"
         destination = "宿舍区" if is_location_open_at_hour("宿舍区", hour) else agent["location"]
         notes.append("校务处未开放，请假改为整理申请理由")
@@ -452,6 +582,15 @@ def auto_update_environment(conn, day):
         values["weather_observed_at"] = ""
     values = derive_environment_from_weather(values)
     values = derive_environment_from_real_time(values)
+    # Materialize local, observable conditions from actual agent occupancy,
+    # facility availability and the latest weather.  This deliberately happens
+    # after environment persistence so node state never depends on a time-slot
+    # crowd template.
+    from app.spatial.physical_state_service import refresh_spatial_physical_states
+    worlds = conn.execute("SELECT DISTINCT world_key FROM spatial_nodes").fetchall()
+    for world in worlds:
+        refresh_spatial_physical_states(conn, world_key=world["world_key"], environment=values)
+    values = derive_environment_from_spatial_facts(conn, values)
     save_environment_values(conn, day, values)
     conn.commit()
     maybe_generate_environment_event(conn, day)

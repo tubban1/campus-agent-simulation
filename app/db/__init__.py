@@ -74,6 +74,8 @@ POSTGRES_ID_TABLES = {
     "external_experiment_bindings",
     "life_course_stages", "life_turning_points", "path_dependency_links",
     "longitudinal_aggregations", "trajectory_reconciliations",
+    "social_interaction_sessions", "social_session_participants",
+    "social_session_turns", "spatial_facility_work_orders",
 }
 
 POSTGRES_TABLE_COLUMNS_CACHE = {}

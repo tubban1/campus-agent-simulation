@@ -11,7 +11,13 @@ from app.spatial.geo_importer import (
     sync_database_sequences,
     LocalProjector,
 )
-from app.spatial.models import spatial_nodes, spatial_edges
+from app.spatial.models import (
+    spatial_edges,
+    spatial_facility_states,
+    spatial_import_batches,
+    spatial_nodes,
+    spatial_resources,
+)
 from app.spatial.planner import plan_route
 from scripts.fetch_tsinghua_geojson import osm_to_geojson
 
@@ -19,7 +25,16 @@ from scripts.fetch_tsinghua_geojson import osm_to_geojson
 @pytest.fixture
 def memory_db():
     engine = create_engine("sqlite:///:memory:")
-    metadata.create_all(engine, tables=[spatial_nodes, spatial_edges])
+    metadata.create_all(
+        engine,
+        tables=[
+            spatial_nodes,
+            spatial_edges,
+            spatial_import_batches,
+            spatial_resources,
+            spatial_facility_states,
+        ],
+    )
     return engine
 
 

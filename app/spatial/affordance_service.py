@@ -108,28 +108,41 @@ DEFAULT_AFFORDANCE_SEED_DATA = [
 ]
 
 
+def _execute(conn, statement, parameters=()):
+    if hasattr(conn, "exec_driver_sql"):
+        return conn.exec_driver_sql(statement, tuple(parameters))
+    return conn.execute(statement, parameters)
+
+
+def _value(row, key):
+    try:
+        return row[key]
+    except (TypeError, KeyError):
+        return row._mapping[key]
+
+
 def seed_spatial_affordances(conn) -> int:
     """Ensure at least the 3 core spatial node categories have configured affordances."""
-    nodes = conn.execute("SELECT id, world_key, name, node_type FROM spatial_nodes").fetchall()
+    nodes = _execute(conn, "SELECT id, world_key, name, node_type FROM spatial_nodes").fetchall()
     if not nodes:
         return 0
 
     inserted_count = 0
     for node in nodes:
-        node_id = int(node["id"])
-        node_name = str(node["name"])
-        world_key = str(node["world_key"])
+        node_id = int(_value(node, "id"))
+        node_name = str(_value(node, "name"))
+        world_key = str(_value(node, "world_key"))
 
         for seed in DEFAULT_AFFORDANCE_SEED_DATA:
             if any(match in node_name for match in seed["location_match"]):
                 for aff in seed["affordances"]:
                     aff_key = aff["affordance_key"]
-                    existing = conn.execute(
+                    existing = _execute(conn,
                         "SELECT id FROM spatial_affordances WHERE node_id = ? AND affordance_key = ?",
                         (node_id, aff_key),
                     ).fetchone()
                     if not existing:
-                        conn.execute(
+                        _execute(conn,
                             """
                             INSERT INTO spatial_affordances
                             (world_key, node_id, affordance_key, name, requirements, effects, capacity, status)
@@ -150,7 +163,6 @@ def seed_spatial_affordances(conn) -> int:
 
 
 def get_spatial_affordances(conn, world_key: Optional[str] = None, node_id: Optional[int] = None) -> List[Dict[str, Any]]:
-    seed_spatial_affordances(conn)
     query = """
         SELECT a.id, a.world_key, a.node_id, n.name AS node_name, a.affordance_key,
                a.name, a.requirements, a.effects, a.capacity, a.status
@@ -181,7 +193,6 @@ def get_spatial_affordances(conn, world_key: Optional[str] = None, node_id: Opti
 
 def discover_agent_affordance_opportunities(conn, resident_id: int) -> Dict[str, Any]:
     """Dynamically discover available affordance opportunities for an agent based on location, perception radius, body state, money, and capacity."""
-    seed_spatial_affordances(conn)
 
     agent_state_row = conn.execute(
         "SELECT current_node_id, x, y, z FROM agent_spatial_states WHERE resident_id = ?",
@@ -249,6 +260,11 @@ def discover_agent_affordance_opportunities(conn, resident_id: int) -> Dict[str,
         all_spatial_edges_list.append(item)
 
     affordances = get_spatial_affordances(conn, world_key=world_key)
+    from app.spatial.physical_state_service import list_spatial_physical_states
+    physical_by_node = {
+        int(item["node_id"]): item
+        for item in list_spatial_physical_states(conn, world_key=world_key)
+    }
     opportunities = []
 
     for aff in affordances:
@@ -292,6 +308,10 @@ def discover_agent_affordance_opportunities(conn, resident_id: int) -> Dict[str,
                     reasons.append("无连通路径（拓扑不可达）")
 
         if target_node:
+            physical = physical_by_node.get(int(aff["node_id"]))
+            if physical and physical.get("access_status") != "open":
+                is_reachable = False
+                reasons.append(f"{target_node['name']}当前{physical['access_status']}（物理状态层）")
             cap = int(target_node.get("capacity") or aff.get("capacity") or 50)
             status = str(target_node.get("status") or "open")
             if status not in ("open", "开放"):

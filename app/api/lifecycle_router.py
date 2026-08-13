@@ -20,21 +20,6 @@ def observer_session(payload: ObserverSessionRequest, request: Request):
     return request.app.state.upsert_observer_session(payload)
 
 
-@router.post("/api/simulate/lifecycle-step/{resident_id}")
-def lifecycle_step(resident_id: int, request: Request):
-    return request.app.state.simulate_lifecycle_step(resident_id)
-
-
-@router.post("/api/simulate/lifecycle-round")
-def lifecycle_round(request: Request):
-    return request.app.state.simulate_lifecycle_round()
-
-
-@router.post("/api/simulate/ai-day")
-def ai_day(request: Request):
-    return request.app.state.simulate_ai_day()
-
-
 @router.get("/api/agents/{resident_id}/life-course/overview")
 def life_course_overview(resident_id: int, request: Request, from_day: Optional[int] = None, to_day: Optional[int] = None, limit: int = 240):
     return request.app.state.life_course_overview(resident_id, from_day, to_day, limit)

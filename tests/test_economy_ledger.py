@@ -50,7 +50,7 @@ class EconomyLedgerFoundationTest(unittest.TestCase):
         main.SOCIAL_SCHEMA_READY = False
         main.WORLD_SCHEMA_READY = False
         main.ensure_campus_state_table(self.conn, allow_ddl=True)
-        main.ensure_space_system(self.conn, allow_ddl=True)
+        main.ensure_space_system(self.conn, allow_ddl=True, seed_demo_spaces=True)
         main.ensure_world_runtime_tables(self.conn, allow_ddl=True)
         self.conn.executescript(ECONOMY_FOUNDATION_SQL)
         self.first_seed = seed_economy_foundation(self.conn)

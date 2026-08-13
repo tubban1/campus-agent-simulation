@@ -276,6 +276,10 @@ def execute_next_atomic_step(conn, resident_id: int, world_time=None) -> Dict[st
     service_status = None
     if action_type in {"consume", "hydrate"} and target_node_id:
         service_status = recovery_service_status(conn, target_node_id, action_type)
+        from app.spatial.facility_service import facility_service_status
+        facility_status = facility_service_status(conn, target_node_id, action_type, hour=now.hour)
+        if not facility_status["available"]:
+            service_status = facility_status
         if not service_status["available"]:
             success = False
             failure_reason = service_status["reason"]
@@ -429,6 +433,9 @@ def execute_next_atomic_step(conn, resident_id: int, world_time=None) -> Dict[st
                 success=True,
                 recovery_quality=(service_status or {}).get("quality"),
             )
+            if action_type in {"consume", "hydrate"} and target_node_id:
+                from app.spatial.facility_service import settle_facility_service
+                settle_facility_service(conn, target_node_id, action_type)
         elif prof_row:
             # Non-body atomic steps (enter/observe/etc.) retain their explicit
             # lightweight cost; recovery actions never write a competing value.

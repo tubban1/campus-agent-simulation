@@ -14,6 +14,7 @@ from sqlalchemy import bindparam, func, insert, select, text, update
 from sqlalchemy.engine import Connection
 
 from app.spatial.models import spatial_edges, spatial_import_batches, spatial_nodes
+from app.spatial.facility_service import sync_real_world_facility_resources
 
 
 EARTH_RADIUS_METERS = 6_371_000
@@ -89,25 +90,6 @@ class GeoImportSummary:
 def load_geojson(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as file:
         return json.load(file)
-
-
-def import_campus_geojson(
-    connection: Connection,
-    geojson: dict[str, Any],
-    *,
-    campus_key: str,
-    origin_lat: Optional[float] = None,
-    origin_lon: Optional[float] = None,
-    dry_run: bool = False,
-) -> GeoImportSummary:
-    return import_real_world_geojson(
-        connection,
-        geojson,
-        world_key=campus_key,
-        origin_lat=origin_lat,
-        origin_lon=origin_lon,
-        dry_run=dry_run,
-    )
 
 
 def sync_database_sequences(connection: Connection) -> None:
@@ -441,21 +423,18 @@ def import_real_world_geojson(
                 "edges_created": edges_created,
             }),
         }
-        try:
-            spatial_import_batches.create(connection, checkfirst=True)
-            existing_batch = connection.execute(
-                select(spatial_import_batches.c.id).where(spatial_import_batches.c.batch_key == batch_key)
-            ).scalar()
-            if existing_batch:
-                connection.execute(
-                    update(spatial_import_batches)
-                    .where(spatial_import_batches.c.batch_key == batch_key)
-                    .values(**batch_values)
-                )
-            else:
-                connection.execute(insert(spatial_import_batches).values(**batch_values))
-        except Exception as err:
-            logger.warning("Optional spatial_import_batches record write skipped: %s", err)
+        existing_batch = connection.execute(
+            select(spatial_import_batches.c.id).where(spatial_import_batches.c.batch_key == batch_key)
+        ).scalar()
+        if existing_batch:
+            connection.execute(
+                update(spatial_import_batches)
+                .where(spatial_import_batches.c.batch_key == batch_key)
+                .values(**batch_values)
+            )
+        else:
+            connection.execute(insert(spatial_import_batches).values(**batch_values))
+        sync_real_world_facility_resources(connection, world_key=world_key)
 
         sync_database_sequences(connection)
 
@@ -862,7 +841,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Import real-world GeoJSON into spatial truth tables.")
     parser.add_argument("geojson_path", type=Path)
     parser.add_argument("--world-key", help="Stable short key, e.g. eth_zentrum or west_lake.")
-    parser.add_argument("--campus-key", help="Backward-compatible alias for --world-key.")
     parser.add_argument("--origin-lat", type=float)
     parser.add_argument("--origin-lon", type=float)
     parser.add_argument("--dry-run", action="store_true")
@@ -874,7 +852,7 @@ def main():
     from app.db.metadata import metadata
     parser = build_parser()
     args = parser.parse_args()
-    world_key = args.world_key or args.campus_key or "tsinghua_main"
+    world_key = args.world_key or "tsinghua_main"
     geojson = load_geojson(args.geojson_path)
     engine = create_database_engine()
     metadata.create_all(engine, tables=[spatial_nodes, spatial_edges, spatial_import_batches])

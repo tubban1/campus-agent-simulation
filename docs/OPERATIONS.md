@@ -28,38 +28,26 @@ ADMIN_TOKEN=本地_admin_token
 
 ## 初始化策略
 
-项目有两个校园初始化脚本，区别很重要：
+当前版本只支持全新世界 bootstrap：
 
 | 脚本 | 行为 | 适用场景 |
 | --- | --- | --- |
-| `python scripts/init_campus_safe.py` | 如果已初始化或已有居民，则跳过种子数据 | 本地日常、持久化数据库、线上启动 |
-| `python scripts/init_campus.py` | 清空并重建校园核心数据 | 开发重置、演示环境从零复现 |
+| `python scripts/deploy_database.py` | 从空 schema 创建当前版本世界 | 本地、Supabase |
+| `python scripts/reset_fresh_world.py --confirm-schema public --yes-rebuild-fresh-world` | 清空确认的 schema 后重新创建 | 只用于无保留数据的环境 |
 
-`scripts/init_db.py` 是旧城市示例初始化脚本，会写入“虚拟成都”示例居民；当前校园主线通常不应使用它。
+不提供旧城市示例、旧数据库或历史 schema 的升级路径。
 
 数据库结构升级使用以下固定顺序：
 
 ```bash
-python scripts/init_campus_safe.py
-python scripts/prepare_legacy_schema.py
-python scripts/migrate_db.py
-python scripts/seed_spatial_foundation.py
-python scripts/seed_economy_foundation.py
-python scripts/seed_organization_runtime.py
-python scripts/seed_supply_foundation.py
-python scripts/seed_labor_runtime.py
-python scripts/seed_budget_runtime.py
-python scripts/seed_market_runtime.py
-python scripts/seed_credit_runtime.py
-python scripts/seed_public_policy_runtime.py
-python scripts/seed_social_institution_runtime.py
-python scripts/seed_macro_runtime.py
-python scripts/audit_economy_ledger.py
-python scripts/migrate_db.py --check
+python scripts/deploy_database.py --require-postgres
 ```
 
-- `prepare_legacy_schema.py` 只补齐 Alembic 基线要求的旧表，不清空业务数据。
-- `migrate_db.py` 首次会验证完整旧 schema 并 stamp 基线，随后执行 `upgrade head`。
+该流程会导入仓库版本化的 `data/geo/tsinghua_main.geojson`，并把初始 Agent 直接绑定到真实
+`tsinghua_main` 建筑/POI；不会创建合成校园空间。节点、道路和服务资源规模以导入输出和
+`spatial_import_batches` 为准。
+
+- `migrate_db.py` 仅接受 bootstrap 写入的全新 schema 标记，随后执行 `upgrade head`。
 - `seed_spatial_foundation.py` 幂等写入校园拓扑，并为尚无空间状态的居民建立兼容初始状态。
 - `seed_economy_foundation.py` 幂等建立经济主体、账户和可追溯期初余额，并执行账本对账。
 - `seed_organization_runtime.py` 幂等建立组织治理档案、角色权限、初始成员责任和组织关系。
@@ -82,15 +70,7 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-python scripts/init_campus_safe.py
-python scripts/prepare_legacy_schema.py
-python scripts/migrate_db.py
-python scripts/seed_spatial_foundation.py
-python scripts/seed_economy_foundation.py
-python scripts/seed_organization_runtime.py
-python scripts/seed_supply_foundation.py
-python scripts/seed_labor_runtime.py
-python scripts/seed_budget_runtime.py
+python scripts/deploy_database.py
 python scripts/seed_market_runtime.py
 python scripts/seed_credit_runtime.py
 python scripts/seed_public_policy_runtime.py
@@ -178,7 +158,7 @@ curl -X POST http://127.0.0.1:8000/api/admin/world/tick \
 localStorage.setItem("ADMIN_TOKEN", "你的_ADMIN_TOKEN")
 ```
 
-刷新页面后会显示启动、暂停、推进 tick 和旧“模拟一天”调试入口。
+刷新页面后会显示启动、暂停和推进 tick 控制；不再存在独立“模拟一天”写入入口。
 
 v1 的 8 小时行动计划优先使用 `llm-planner-v1`，写入 `agent_action_plans`，每次自动模型调用都会进入 `model_call_logs` 并消耗 `daily_auto_model_budget`。v2 默认每日自动预算为 500 次；预算耗尽或模型失败时会自动降级为规则计划、规则等待或规则观察，世界运行不会被阻塞。`model_call_logs` 只记录真实成功、失败或预算耗尽结果，不把预算预占记作一次模型调用。
 
@@ -226,7 +206,7 @@ curl http://127.0.0.1:8000/api/research/calibration-report
 确认需要丢弃当前模拟进度后运行：
 
 ```bash
-python scripts/init_campus.py
+python scripts/seed_fresh_residents.py
 ```
 
 该脚本会删除并重建 residents、agent_profiles、relationships、memories、inventory、policies、transactions、city_events、campus_state 等核心数据。
@@ -280,12 +260,7 @@ docker run --rm -p 8000:8000 \
 当前 Dockerfile 在 build 阶段执行：
 
 ```bash
-python scripts/init_campus_safe.py
-python scripts/prepare_legacy_schema.py
-python scripts/migrate_db.py
-python scripts/seed_spatial_foundation.py
-python scripts/seed_economy_foundation.py
-python scripts/seed_organization_runtime.py
+python scripts/deploy_database.py
 python scripts/seed_supply_foundation.py
 python scripts/seed_labor_runtime.py
 python scripts/seed_budget_runtime.py
@@ -417,10 +392,10 @@ python scripts/export_research_dataset.py --from-day 20 --to-day 30 --format csv
 curl http://127.0.0.1:8000/api/state
 ```
 
-如果 `/api/state` 报数据库表不存在，运行：
+如果 `/api/state` 报数据库表不存在，按空库重建：
 
 ```bash
-python scripts/init_campus_safe.py
+python scripts/reset_fresh_world.py --confirm-schema public --yes-rebuild-fresh-world
 ```
 
 ### Agent 行动失败

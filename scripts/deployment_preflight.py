@@ -20,6 +20,20 @@ from app.db.migration_runtime import (  # noqa: E402
 )
 
 
+REQUIRED_FRESH_WORLD_TABLES = {
+    "alembic_version",
+    "spatial_nodes",
+    "spatial_edges",
+    "agent_spatial_states",
+    "spatial_physical_states",
+    "spatial_facility_states",
+    "spatial_facility_work_orders",
+    "social_interaction_sessions",
+    "social_session_participants",
+    "social_session_turns",
+}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--environment", choices=("staging", "production"), required=True)
@@ -44,10 +58,18 @@ def main() -> None:
         try:
             current = get_current_revision(engine)
             head = get_head_revision(get_alembic_config())
+            from sqlalchemy import inspect
+            tables = set(inspect(engine).get_table_names())
         finally:
             engine.dispose()
         if current != head:
             raise SystemExit(f"database revision is {current or 'unversioned'}, expected {head}")
+        missing = sorted(REQUIRED_FRESH_WORLD_TABLES - tables)
+        if missing:
+            raise SystemExit(
+                "database is not a fresh-world runtime schema; missing "
+                + ", ".join(missing)
+            )
     print(f"{expected_environment} deployment preflight passed")
 
 

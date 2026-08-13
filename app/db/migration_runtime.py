@@ -21,6 +21,7 @@ from app.db.engine import (
 BASELINE_REVISION = "20260729_0001"
 BASELINE_REQUIRED_TABLES = {
     "residents",
+    "simulation_state",
     "campus_state",
     "campus_spaces",
     "world_runtime",
@@ -28,6 +29,22 @@ BASELINE_REQUIRED_TABLES = {
     "world_snapshots",
     "experiment_runs",
     "world_branches",
+}
+
+# Tables that must exist at the current Alembic head.  Keep this separate
+# from the pre-migration baseline: a blank fresh database is stamped at the
+# baseline before later migrations create these runtime tables.
+READINESS_REQUIRED_TABLES = BASELINE_REQUIRED_TABLES | {
+    "spatial_nodes",
+    "spatial_edges",
+    "spatial_import_batches",
+    "spatial_physical_states",
+    "spatial_edge_physical_states",
+    "spatial_facility_states",
+    "spatial_facility_work_orders",
+    "social_interaction_sessions",
+    "social_session_participants",
+    "social_session_turns",
 }
 
 

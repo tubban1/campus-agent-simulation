@@ -108,6 +108,41 @@ spatial_edges = Table(
     CheckConstraint("weather_factor > 0", name="spatial_edges_weather_positive"),
 )
 
+spatial_physical_states = Table(
+    "spatial_physical_states",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("world_key", String(64), nullable=False, index=True),
+    Column("node_id", ForeignKey("spatial_nodes.id", ondelete="CASCADE"), nullable=False),
+    Column("temperature_c", Float, nullable=True),
+    Column("precipitation", Float, nullable=False, default=0.0),
+    Column("illumination", Float, nullable=False, default=1.0),
+    Column("noise_db", Float, nullable=False, default=30.0),
+    Column("crowd_density", Float, nullable=False, default=0.0),
+    Column("air_quality", Float, nullable=False, default=100.0),
+    Column("access_status", String(32), nullable=False, default="open"),
+    Column("source", String(64), nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=True),
+    Column("version", Integer, nullable=False, default=1),
+    UniqueConstraint("world_key", "node_id", name="uq_spatial_physical_state_world_node"),
+)
+
+spatial_edge_physical_states = Table(
+    "spatial_edge_physical_states",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("world_key", String(64), nullable=False, index=True),
+    Column("edge_id", ForeignKey("spatial_edges.id", ondelete="CASCADE"), nullable=False),
+    Column("access_status", String(32), nullable=False, default="open"),
+    Column("travel_factor", Float, nullable=False, default=1.0),
+    Column("source", String(64), nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=True),
+    Column("version", Integer, nullable=False, default=1),
+    UniqueConstraint("world_key", "edge_id", name="uq_spatial_edge_physical_state_world_edge"),
+)
+
 agent_spatial_capabilities = Table(
     "agent_spatial_capabilities",
     metadata,
@@ -264,6 +299,30 @@ spatial_resources = Table(
         "service_rate_per_hour > 0",
         name="spatial_resources_service_rate_positive",
     ),
+)
+
+spatial_facility_states = Table(
+    "spatial_facility_states",
+    metadata,
+    Column(
+        "resource_id",
+        ForeignKey("spatial_resources.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("open_hour", Integer, nullable=False, default=0),
+    Column("close_hour", Integer, nullable=False, default=24),
+    Column("condition", Float, nullable=False, default=100.0),
+    Column("maintenance_status", String(32), nullable=False, default="operational"),
+    Column("inventory_units", Integer, nullable=False, default=0),
+    Column("inventory_capacity", Integer, nullable=False, default=0),
+    Column("last_replenished_day", Integer, nullable=False, default=0),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint("open_hour >= 0 AND open_hour <= 23", name="spatial_facility_open_hour_range"),
+    CheckConstraint("close_hour >= 1 AND close_hour <= 24", name="spatial_facility_close_hour_range"),
+    CheckConstraint("condition >= 0 AND condition <= 100", name="spatial_facility_condition_range"),
+    CheckConstraint("inventory_units >= 0", name="spatial_facility_inventory_nonnegative"),
+    CheckConstraint("inventory_capacity >= 0", name="spatial_facility_inventory_capacity_nonnegative"),
+    CheckConstraint("inventory_units <= inventory_capacity", name="spatial_facility_inventory_range"),
 )
 
 spatial_admission_queue = Table(

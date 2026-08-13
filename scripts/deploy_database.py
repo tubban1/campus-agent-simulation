@@ -19,9 +19,9 @@ from app.db.engine import get_database_schema  # noqa: E402
 
 
 DEPLOYMENT_SCRIPTS = (
-    "init_campus_safe.py",
-    "prepare_legacy_schema.py",
+    "bootstrap_fresh_world.py",
     "migrate_db.py",
+    "import_tsinghua_world.py",
     "seed_spatial_foundation.py",
     "seed_economy_foundation.py",
     "seed_organization_runtime.py",
@@ -79,7 +79,7 @@ def validate_target(*, require_postgres: bool) -> None:
     if require_postgres and not using_postgres():
         raise RuntimeError(
             "DATABASE_URL must point to PostgreSQL for deployment. Refusing to "
-            "initialize a fallback SQLite database."
+            "initialize a local SQLite database."
         )
     target = "PostgreSQL" if using_postgres() else "SQLite"
     print(f"Deployment database target validated: {target}.")
@@ -87,6 +87,7 @@ def validate_target(*, require_postgres: bool) -> None:
 
 def run_deployment(*, require_postgres: bool = False) -> None:
     validate_target(require_postgres=require_postgres)
+    os.environ.setdefault("INITIAL_WORLD_KEY", "tsinghua_main")
     with deployment_lock():
         for script_name in DEPLOYMENT_SCRIPTS:
             script_path = PROJECT_ROOT / "scripts" / script_name

@@ -85,7 +85,7 @@ class SpatialFoundationTest(unittest.TestCase):
         main.SOCIAL_SCHEMA_READY = False
         main.WORLD_SCHEMA_READY = False
         main.ensure_campus_state_table(connection, allow_ddl=True)
-        main.ensure_space_system(connection, allow_ddl=True)
+        main.ensure_space_system(connection, allow_ddl=True, seed_demo_spaces=True)
         main.ensure_agent_news_system(connection, allow_ddl=True)
         main.ensure_external_information_system(connection, allow_ddl=True)
         main.ensure_world_runtime_tables(connection, allow_ddl=True)
@@ -115,7 +115,7 @@ class SpatialFoundationTest(unittest.TestCase):
     def test_seed_builds_idempotent_metric_topology(self):
         self.assertEqual(self.first_seed["nodes_total"], 19)
         self.assertEqual(self.first_seed["edges_total"], 20)
-        self.assertEqual(self.first_seed["resources_total"], 7)
+        self.assertEqual(self.first_seed["resources_total"], 9)
         self.assertEqual(self.first_seed["capabilities_created"], 2)
         self.assertEqual(self.first_seed["states_created"], 2)
         self.assertEqual(self.first_seed["body_states_created"], 2)
@@ -347,6 +347,44 @@ class SpatialFoundationTest(unittest.TestCase):
             spatial_memory_location_factors(connection, 2)["图书馆"],
             1.0,
         )
+        connection.close()
+
+    def test_agent_records_only_directly_observed_physical_state(self):
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            """INSERT INTO world_ticks
+               (id, tick_index, world_time, day, slot, reason, status)
+               VALUES (31, 31, '2026-07-29T09:00:00+00:00', 1, '上午', 'test', 'running')"""
+        )
+        library = connection.execute(
+            "SELECT id FROM spatial_nodes WHERE code = 'library'"
+        ).fetchone()
+        connection.execute(
+            """INSERT INTO spatial_physical_states
+                (world_key, node_id, temperature_c, precipitation, illumination,
+                 noise_db, crowd_density, air_quality, access_status, source,
+                 observed_at, version)
+               VALUES ('default', ?, 24, 3, 0.5, 64, 0.55, 95, 'restricted',
+                       'test', '2026-07-29T09:00:00+00:00', 1)""",
+            (library["id"],),
+        )
+        captured = capture_tick_observations(
+            connection, datetime(2026, 7, 29, 9, tzinfo=timezone.utc),
+            tick_id=31, day=1, branch_key="main",
+        )
+        physical = [item for item in captured if item["fact_type"] == "spatial_physical_state"]
+        self.assertEqual([item["observer_resident_id"] for item in physical], [1])
+        self.assertEqual(physical[0]["origin_node_id"], library["id"])
+        self.assertIn("restricted", physical[0]["summary"])
+        # Same physical-state version must not create another memory every tick.
+        self.assertFalse([
+            item for item in capture_tick_observations(
+                connection, datetime(2026, 7, 29, 9, 1, tzinfo=timezone.utc),
+                tick_id=31, day=1, branch_key="main",
+            ) if item["fact_type"] == "spatial_physical_state"
+        ])
         connection.close()
 
     def test_information_literacy_changes_confidence_not_event_access(self):

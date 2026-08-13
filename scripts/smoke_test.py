@@ -48,6 +48,9 @@ def check_file_exports():
     assert "/life-course/overview" in app_content or "/life-course/overview" in (PROJECT_ROOT / "frontend" / "js" / "api-client.js").read_text(encoding="utf-8"), "生命历程未指向现有 overview 接口"
     print("  ✓ app.js 竞态请求令牌与 WorldStore.selectWorld 选界入口校验通过")
 
+    api_client_content = (PROJECT_ROOT / "frontend" / "js" / "api-client.js").read_text(encoding="utf-8")
+    assert "/api/simulate" not in api_client_content and "/api/tick" not in api_client_content, "api-client.js 仍保留已移除的模拟写入入口"
+
     store_path = PROJECT_ROOT / "frontend" / "js" / "spatial" / "world-store.js"
     store_content = store_path.read_text(encoding="utf-8")
     assert "selectWorld" in store_content, "world-store.js 缺失 selectWorld 选界同步入口"
@@ -133,6 +136,22 @@ def run_smoke_tests():
         test_env["SIMULATION_AUTO_START"] = "false"
         test_env["EXTERNAL_SYNC_ENABLED"] = "false"
 
+        # The application no longer creates or repairs schemas during HTTP
+        # startup.  Exercise the same explicit fresh-world deployment path
+        # that local and Supabase environments use.
+        deploy = subprocess.run(
+            [sys.executable, "scripts/deploy_database.py"],
+            cwd=str(PROJECT_ROOT),
+            env=test_env,
+            capture_output=True,
+            text=True,
+        )
+        if deploy.returncode:
+            raise RuntimeError(
+                "隔离测试数据库 bootstrap 失败："
+                + (deploy.stdout + deploy.stderr)[-2000:]
+            )
+
         server_proc = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(target_port)],
             cwd=str(PROJECT_ROOT),
@@ -165,7 +184,13 @@ def run_smoke_tests():
         if server_proc:
             print("[+] 正在停止隔离测试服务并清理临时 SQLite 数据库...")
             server_proc.terminate()
-            server_proc.wait()
+            try:
+                server_proc.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                # A test helper must never strand a Uvicorn process (or make
+                # CI wait forever) if an application's shutdown hook stalls.
+                server_proc.kill()
+                server_proc.wait(timeout=4)
         temp_dir.cleanup()
 
     print("=" * 60)

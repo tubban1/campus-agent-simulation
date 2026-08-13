@@ -129,7 +129,7 @@ python scripts/import_real_world_geojson.py data/geo/eth_zentrum.geojson \
   --origin-lon 8.5480
 ```
 
-旧命令 `scripts/import_campus_geojson.py --campus-key ...` 仍可使用，作为兼容入口。
+统一使用 `scripts/import_real_world_geojson.py`；不再维护旧导入入口。
 
 ## 当前导入规则
 

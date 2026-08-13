@@ -373,10 +373,9 @@ autoDeployTrigger: checksPass
 ### 8.2 Migration 规则
 
 - 所有 schema 变化必须使用 Alembic migration。
-- 不允许在 Production 使用 `init_campus.py`。
-- Production 只允许使用 `init_campus_safe.py` 和幂等 seed。
-- Migration 使用 expand/contract：先增加兼容结构，代码切换后再删除旧结构。
-- 删除列、改类型、大批量回填必须拆分发布。
+- 只允许 `deploy_database.py` 创建全新世界，或在确认 schema 后使用 `reset_fresh_world.py` 重建。
+- 不提供旧数据库的 expand/contract 升级或数据回填路径。
+- 删除列、改类型或大批量变更通过新的空库基线验证。
 - Migration 必须先在 CI PostgreSQL 和 Staging 执行。
 - 高风险 migration 前确认 PITR 窗口有效。
 - Deployment advisory lock 继续保留，避免两个部署同时迁移。
@@ -592,7 +591,7 @@ autoDeployTrigger: checksPass
 
 - 只允许在 Staging 执行重置。
 - 重置前确认 `APP_ENV=staging` 和目标数据库名称。
-- Production 禁止运行 `init_campus.py`。
+- Production 不允许运行历史初始化脚本；只允许全新世界的 `deploy_database.py`。
 - 重置后重新运行完整 deployment bootstrap 和 smoke test。
 
 ### 16.4 故障处理
@@ -687,6 +686,7 @@ autoDeployTrigger: checksPass
   并使用 `WRITE_RATE_LIMIT_PER_MINUTE` 做每客户端限流。
 - CI 运行全量 pytest；部署后执行 `python scripts/smoke_test.py https://<service-url>`。
 - 部署前执行 `python scripts/deployment_preflight.py --environment <staging|production> --check-database`；
+- 数据库 ready 后执行 `python scripts/verify_real_world_runtime.py --world-key tsinghua_main`。该脚本只读验证已导入世界的节点/边规模、场景组装耗时和一条真实边上的 A* 路由耗时；它不 seed、不迁移也不启动 tick。
   它只校验环境与迁移版本，不输出 secret。
 - 创建 Staging 时必须显式设置 `APP_ENV=staging`、`WORLD_RUNNER_ENABLED=false`、
   `WORLD_RUNTIME_AUTO_START=false`，并使用独立数据库和独立 `ADMIN_TOKEN`。

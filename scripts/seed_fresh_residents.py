@@ -1,3 +1,9 @@
+"""Seed the canonical residents for a freshly created world.
+
+This script owns people and non-spatial state only. Geography is imported by
+``import_tsinghua_world.py`` and the spatial seed binds residents to real POI.
+"""
+
 from pathlib import Path
 import json
 import sys
@@ -5,27 +11,9 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.db import execute_script, get_connection
-from app.models import SCHEMA_SQL
+from app.db import get_connection
 from app.main import DEFAULT_AGENT_PERSONALITY_TRAITS
 from tools.city_tools import add_event, add_inventory
-
-CAMPUS_STATE_SQL = """
-CREATE TABLE IF NOT EXISTS campus_state (
-    day INTEGER PRIMARY KEY,
-    weather TEXT NOT NULL DEFAULT '晴',
-    semester_stage TEXT NOT NULL DEFAULT '平时周',
-    exam_pressure INTEGER NOT NULL DEFAULT 35,
-    activity_heat INTEGER NOT NULL DEFAULT 50,
-    campus_flow INTEGER NOT NULL DEFAULT 55,
-    canteen_crowd INTEGER NOT NULL DEFAULT 50,
-    library_crowd INTEGER NOT NULL DEFAULT 45,
-    traffic_status TEXT NOT NULL DEFAULT '正常',
-    campus_mood TEXT NOT NULL DEFAULT '平稳',
-    consumption_index REAL NOT NULL DEFAULT 1.0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-"""
 
 CAMPUS_AGENTS = [
     (1, "林小夏", "女", "大一学生", "好奇、外向、喜欢参加活动", "适应校园生活并结交朋友", 120, "宿舍区", "短发圆脸、蓝色卫衣、背双肩包的卡通女生", "/avatars/01_lin_xiaoxia.svg", 88, "期待", "参加新生破冰活动", ["08:00 早餐", "10:00 高数课", "15:00 社团招新", "20:00 宿舍复盘"], {"seeing": "宿舍楼下有社团招新海报"}),
@@ -119,23 +107,19 @@ INVENTORY = [
 
 
 def main():
-    execute_script(SCHEMA_SQL)
-    execute_script(CAMPUS_STATE_SQL)
-
     with get_connection() as conn:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(agent_profiles)").fetchall()}
-        if "avatar_image" not in columns:
-            conn.execute("ALTER TABLE agent_profiles ADD COLUMN avatar_image TEXT NOT NULL DEFAULT ''")
-        conn.execute("DELETE FROM memories")
-        conn.execute("DELETE FROM city_events")
-        conn.execute("DELETE FROM transactions")
-        conn.execute("DELETE FROM policies")
-        conn.execute("DELETE FROM relationships")
-        conn.execute("DELETE FROM inventory")
-        conn.execute("DELETE FROM agent_profiles")
-        conn.execute("DELETE FROM residents")
-        conn.execute("DELETE FROM campus_state")
-        conn.execute("INSERT OR REPLACE INTO simulation_state (key, value) VALUES ('current_day', '1')")
+        existing_resident = conn.execute("SELECT 1 FROM residents LIMIT 1").fetchone()
+        if existing_resident:
+            raise RuntimeError(
+                "Fresh resident seed refuses to overwrite existing residents. "
+                "Use reset_fresh_world.py for an intentional rebuild."
+            )
+        conn.execute(
+            """
+            INSERT INTO simulation_state (key, value) VALUES ('current_day', '1')
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """
+        )
         conn.execute(
             """
             INSERT OR IGNORE INTO campus_state (day, weather, semester_stage)
@@ -216,12 +200,11 @@ def main():
         for resident_id, item_name, quantity in INVENTORY:
             add_inventory(conn, resident_id, item_name, quantity)
 
-        add_event(conn, 1, "system", "校园封闭世界初始化完成，20名卡通校园 Agent 进入校园。")
+        add_event(conn, 1, "system", "新世界居民种子已创建；空间位置将在真实地理导入后绑定。")
         conn.commit()
 
-    print("校园封闭世界初始化完成：20名 Agent 已创建")
+    print("新世界居民种子已创建：20 名 Agent 待绑定至真实地理")
 
 
 if __name__ == "__main__":
     main()
-

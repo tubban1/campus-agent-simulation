@@ -191,18 +191,29 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
   const currentScene = WorldStore.spatialScene;
   if (currentScene && Array.isArray(currentScene.nodes)) {
     const nodeMap = new Map((currentScene.nodes || []).map(n => [n.id, n]));
+    // Physical state is a separate runtime observation layer. Join it to the
+    // immutable OSM node graph only for display; it must never overwrite map
+    // geometry or be inferred from a legacy time-of-day template.
+    const physicalByNode = new Map((currentScene.physical_states || []).map(s => [Number(s.node_id), s]));
     const geojsonFeatures = currentScene.nodes
       .filter(n => n.longitude && n.latitude && ["building", "poi", "outdoor_area"].includes(n.node_type))
-      .map(n => ({
+      .map(n => {
+        const physical = physicalByNode.get(Number(n.id)) || {};
+        return ({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [n.longitude, n.latitude] },
         properties: {
           id: n.id,
           name: n.name || "POI",
           type: n.node_type || "poi",
-          tier: n.node_type === "building" && Number(n.capacity || 0) >= 400 ? 0 : (n.node_type === "poi" ? 2 : 1)
+          tier: n.node_type === "building" && Number(n.capacity || 0) >= 400 ? 0 : (n.node_type === "poi" ? 2 : 1),
+          access_status: physical.access_status || n.status || "open",
+          crowd_density: Number(physical.crowd_density || 0),
+          precipitation: Number(physical.precipitation || 0),
+          noise_db: Number(physical.noise_db || 0)
         }
-      }));
+      });
+      });
 
     const edgeFeatures = (currentScene.edges || [])
       .map(e => {
@@ -220,6 +231,7 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
             weather_factor: Number(e.weather_factor || 1.0),
             congestion_factor: Number(e.congestion_factor || 1.0),
             high_resistance: Number(e.weather_factor || 1.0) > 1.25
+            ,closed: String(e.status || 'open') !== 'open'
           }
         };
       })
@@ -248,6 +260,12 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
             'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1.5, 18, 3.5],
             'line-opacity': 0.35
           }
+        }, 'campus-nodes-layer');
+
+        maplibreInstance.addLayer({
+          id: 'campus-edges-closed-layer', type: 'line', source: 'campus-edges',
+          filter: ['==', ['get', 'closed'], true],
+          paint: { 'line-color': '#d84315', 'line-width': ['interpolate', ['linear'], ['zoom'], 14, 3, 18, 6], 'line-opacity': 0.9 }
         }, 'campus-nodes-layer');
 
         maplibreInstance.addLayer({
@@ -284,7 +302,7 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
           filter: ['==', ['get', 'tier'], 0],
           paint: {
             'circle-radius': ['interpolate', ['linear'], ['zoom'], 12.5, 4, 16, 7, 19, 10],
-            'circle-color': '#1769aa',
+            'circle-color': ['case', ['==', ['get', 'access_status'], 'closed'], '#d84315', ['>=', ['get', 'crowd_density'], 0.8], '#f9a825', '#1769aa'],
             'circle-stroke-width': 2,
             'circle-stroke-color': '#ffffff'
           }
@@ -292,7 +310,7 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
         maplibreInstance.addLayer({
           id: 'campus-building-nodes-layer', type: 'circle', source: 'campus-nodes', minzoom: 14.5,
           filter: ['==', ['get', 'tier'], 1],
-          paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 15, 4, 18, 8], 'circle-color': '#3287c5', 'circle-stroke-width': 1.5, 'circle-stroke-color': '#ffffff' }
+          paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 15, 4, 18, 8], 'circle-color': ['case', ['==', ['get', 'access_status'], 'closed'], '#d84315', ['>=', ['get', 'crowd_density'], 0.8], '#f9a825', '#3287c5'], 'circle-stroke-width': 1.5, 'circle-stroke-color': '#ffffff' }
         });
         maplibreInstance.addLayer({
           id: 'campus-poi-nodes-layer', type: 'circle', source: 'campus-nodes', minzoom: 16,
@@ -339,6 +357,7 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
                 <div><strong>核定容量：</strong>${nodeObj.capacity ?? "不限"} 人</div>
                 <div><strong>经纬度坐标：</strong>${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}</div>
                 <div><strong>运营状态：</strong><span style="color:#00e676;font-weight:bold;">${escapeHtml(nodeObj.status || "正常开放")}</span></div>
+                <div><strong>实时物理状态：</strong>${escapeHtml(props.access_status || "open")} · 拥挤 ${Math.round(Number(props.crowd_density || 0) * 100)}% · 噪声 ${Math.round(Number(props.noise_db || 0))}dB</div>
               </div>
               <div class="popup-actions">
                 <button onclick="window.selectNodeDestination('${nodeObj.id}')">🎯 设为 Agent 目标导航点</button>

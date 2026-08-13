@@ -22,8 +22,9 @@ def run_world_runner_loop(
     http_exception_type,
     logger,
     sleep_seconds=5,
+    stop_event=None,
 ):
-    while True:
+    while not (stop_event and stop_event.is_set()):
         try:
             with get_connection() as conn:
                 stale_tick_ids = reconcile_stale_ticks(conn)
@@ -38,4 +39,7 @@ def run_world_runner_loop(
                 logger.exception("World runner loop skipped one cycle")
         except Exception:
             logger.exception("World runner loop skipped one cycle")
-        time.sleep(sleep_seconds)
+        if stop_event:
+            stop_event.wait(sleep_seconds)
+        else:
+            time.sleep(sleep_seconds)

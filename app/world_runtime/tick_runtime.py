@@ -198,6 +198,7 @@ def _advance_world_tick_locked(reason="background"):
             start_event = pre_agent["start_event"]
             local_observations = pre_agent["local_observations"]
             body_states = pre_agent["body_states"]
+            facility_updates = pre_agent["facility_updates"]
             movement_results = pre_agent["movement_results"]
             movement_events = pre_agent["movement_events"]
             multiscale_updates = pre_agent["multiscale_updates"]
@@ -302,6 +303,11 @@ def _advance_world_tick_locked(reason="background"):
                             1 for item in body_states if item["moving"]
                         ),
                     },
+                    # This is deliberately part of the completed tick as well
+                    # as its start event: clients polling only completion
+                    # events can update a POI's stock/maintenance badge
+                    # without reloading the complete spatial scene.
+                    "facility_lifecycle": facility_updates,
                     "local_perception": {
                         "observation_count": len(local_observations),
                         "observer_count": len(
@@ -356,6 +362,7 @@ def _advance_world_tick_locked(reason="background"):
                 "longitudinal_updates": longitudinal_updates,
                 "organization_events": organization_events,
                 "spatial_movements": movement_results,
+                "facility_updates": facility_updates,
                 "body_states": body_states,
                 "local_observations": local_observations,
                 "movement_events": movement_events,

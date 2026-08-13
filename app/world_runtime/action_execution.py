@@ -1,5 +1,7 @@
 """Autonomous agent action execution for world ticks."""
 
+import json
+
 
 _MODULE_NAME = __name__
 
@@ -16,24 +18,163 @@ def configure(**bindings):
     module_globals["__name__"] = _MODULE_NAME
 
 
+def _record_social_session(conn, *, agent, target, action, day, response, reason, location):
+    """Persist the receiver's response with physical co-location evidence.
+
+    A relationship delta is an outcome, not proof that a second person had a
+    chance to decide.  This immutable session row supplies that proof for the
+    later multi-round/session UI without treating a global random resident as
+    an interaction partner.
+    """
+    evidence = json.dumps({
+        "location": location,
+        "node_id": target.get("node_id"),
+        "co_location": True,
+        "initiator_action": action,
+    }, ensure_ascii=False)
+    # Accepted in-person exchanges remain active for two more turns.  This
+    # prevents one tick from pretending to represent an entire conversation.
+    # A new proposal after that starts a distinct session with its own proof.
+    active = None
+    if response == "accepted":
+        active = conn.execute(
+            """SELECT id FROM social_interaction_sessions
+               WHERE initiator_resident_id = ? AND receiver_resident_id = ?
+                 AND node_id = ? AND day = ? AND interaction_type = ?
+                 AND status = 'active'
+               ORDER BY id DESC LIMIT 1""",
+            (agent["id"], target["id"], target.get("node_id"), day, action),
+        ).fetchone()
+    if active:
+        session_id = int(active["id"])
+        prior = conn.execute(
+            "SELECT COUNT(*) AS count FROM social_session_turns WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()["count"]
+        turn_index = int(prior) + 1
+        is_new = False
+    else:
+        cursor = conn.execute(
+            """INSERT INTO social_interaction_sessions
+                  (initiator_resident_id, receiver_resident_id, node_id, day,
+                   interaction_type, status, receiver_response, reason,
+                   evidence_json, resolved_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
+            (
+                agent["id"], target["id"], target.get("node_id"), day, action,
+                "active" if response == "accepted" else "declined", response,
+                reason, evidence,
+            ),
+        )
+        session_id = getattr(cursor, "lastrowid", None)
+        # SQL placeholders cannot portably carry CURRENT_TIMESTAMP as a bound
+        # value; decline sessions are resolved immediately in a separate step.
+        if response != "accepted":
+            conn.execute(
+                "UPDATE social_interaction_sessions SET resolved_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (session_id,),
+            )
+        turn_index = 1
+        is_new = True
+        for resident_id, role, status in (
+            (agent["id"], "initiator", "joined"),
+            (target["id"], "receiver", "accepted" if response == "accepted" else response),
+        ):
+            conn.execute(
+                """INSERT INTO social_session_participants
+                   (session_id, resident_id, role, status)
+                   VALUES (?, ?, ?, ?)""",
+                (session_id, resident_id, role, status),
+            )
+    conn.execute(
+        """INSERT INTO social_session_turns
+           (session_id, turn_index, actor_resident_id, turn_type, response,
+            summary, evidence_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, turn_index, agent["id"], "proposal" if is_new else "continuation",
+         response, reason, evidence),
+    )
+    completed = response == "accepted" and turn_index >= 3
+    if completed:
+        conn.execute(
+            "UPDATE social_interaction_sessions SET status = 'completed', resolved_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (session_id,),
+        )
+    return {"id": session_id, "turn_index": turn_index, "is_new": is_new, "completed": completed}
+
+
 def apply_runtime_social_effect(conn, agent, action, location, day):
     target = nearby_interaction_target(conn, agent["id"], location)
     if not target:
         return None
+    receiver = conn.execute(
+        """SELECT r.id, r.name, p.energy, b.hunger, b.fatigue, b.attention,
+                  d.trust, d.cooperation, d.conflict
+           FROM residents r
+           LEFT JOIN agent_profiles p ON p.resident_id = r.id
+           LEFT JOIN agent_body_states b ON b.resident_id = r.id
+           LEFT JOIN relationship_dynamics d
+             ON d.from_resident_id = r.id AND d.to_resident_id = ?
+           WHERE r.id = ?""",
+        (agent["id"], target["id"]),
+    ).fetchone()
+    receiver = dict(receiver) if receiver else {"id": target["id"], "name": target["name"]}
+    fatigue = float(receiver.get("fatigue") or 0)
+    hunger = float(receiver.get("hunger") or 0)
+    attention = float(receiver.get("attention") or 50)
+    trust = float(receiver.get("trust") or 50)
+    conflict = float(receiver.get("conflict") or 0)
+    if fatigue >= 80 or hunger >= 90 or attention < 15:
+        response = "unavailable"
+        reason = "接收者当前身体或注意力状态不足"
+    elif conflict >= 70 and action in {"chat", "collaborate"}:
+        response = "declined"
+        reason = "接收者基于既有冲突拒绝互动"
+    elif trust < 25 and action == "collaborate":
+        response = "declined"
+        reason = "接收者基于低信任拒绝协作"
+    else:
+        response = "accepted"
+        reason = "接收者在同一真实地点自主接受互动"
+    session = _record_social_session(
+        conn, agent=agent, target=target, action=action, day=day,
+        response=response, reason=reason, location=location,
+    )
+    if response != "accepted":
+        return {
+            "target_id": target["id"], "target_name": target["name"],
+            "response": response, "reason": reason, "effect": "none",
+            "session_id": session["id"], "session_turn": session["turn_index"],
+            "evidence": {"location": location, "node_id": target.get("node_id"), "co_location": True},
+        }
+    # Relationship effects settle once, when a session closes, rather than
+    # being charged once per polling/tick continuation.
+    if not session["completed"]:
+        return {
+            "target_id": target["id"], "target_name": target["name"],
+            "response": response, "reason": reason, "effect": "pending",
+            "session_id": session["id"], "session_turn": session["turn_index"],
+            "evidence": {"location": location, "node_id": target.get("node_id"), "co_location": True},
+        }
     if action in {"chat", "club_activity", "collaborate"}:
         change = evolve_relationship(conn, agent["id"], target["id"], action, f"{location}发生协作或交流", 3, 4, -1)
+        receiver_change = evolve_relationship(conn, target["id"], agent["id"], action, f"{location}接受{agent['name']}发起的互动", 2, 3, -1)
         commitment = maybe_create_social_commitment(conn, agent["id"], target, location) if action == "collaborate" else None
         return {
             "target_id": target["id"],
             "target_name": target["name"],
-            "effect": "positive",
+            "response": response, "reason": reason, "effect": "positive",
             "relationship": change,
+            "receiver_relationship": receiver_change,
             "commitment": commitment,
+            "session_id": session["id"], "session_turn": session["turn_index"],
+            "evidence": {"location": location, "node_id": target.get("node_id"), "co_location": True},
         }
     if action == "conflict":
         change = evolve_relationship(conn, agent["id"], target["id"], "conflict", f"{location}发生轻微摩擦", -3, -2, 4)
+        receiver_change = evolve_relationship(conn, target["id"], agent["id"], "conflict", f"{location}回应与{agent['name']}的摩擦", -2, -1, 3)
         add_event(conn, day, "world_agent_conflict", f"{agent['name']} 与 {target['name']} 在{location}出现轻微摩擦。")
-        return {"target_id": target["id"], "target_name": target["name"], "effect": "conflict", "relationship": change}
+        return {"target_id": target["id"], "target_name": target["name"], "response": response, "reason": reason, "effect": "conflict", "relationship": change, "receiver_relationship": receiver_change, "session_id": session["id"], "session_turn": session["turn_index"], "evidence": {"location": location, "node_id": target.get("node_id"), "co_location": True}}
     return None
 
 
@@ -176,7 +317,6 @@ def process_world_agent_tick(conn, agent, world_time, tick_id, day, slot, observ
     event_location = spatial_context["node_name"] if spatial_context else destination
     if (
         action in destination_actions
-        and destination in VALID_LOCATIONS
         and destination != agent["location"]
         and not spatial_context
         and spatial_runtime_available(conn)
@@ -297,9 +437,32 @@ def process_world_agent_tick(conn, agent, world_time, tick_id, day, slot, observ
                 "plan_outcome": None,
             }
 
-        if action == "move" and destination in VALID_LOCATIONS and destination != agent["location"]:
-            result = move_resident(conn, agent["id"], destination, commit=False)
-            content = result["description"]
+        if action == "move" and destination != agent["location"] and spatial_runtime_available(conn):
+            # The destination may be a broad intent ("食堂") or an exact
+            # imported POI.  The spatial runtime resolves either against the
+            # active real-world graph and stores a route; it must never be
+            # replaced by the legacy direct ``residents.location`` update.
+            from app.spatial.runtime import start_spatial_movement
+
+            movement = start_spatial_movement(
+                conn,
+                agent["id"],
+                destination,
+                world_time=world_time,
+            )
+            resolved_destination = str(movement.get("destination") or destination)
+            event_location = resolved_destination
+            title = f"{agent['name']}正在前往{resolved_destination}"
+            decision["spatial_movement"] = {
+                "status": movement.get("movement_status"),
+                "target_node_id": movement.get("target_node_id"),
+                "destination": resolved_destination,
+                "progress": movement.get("progress"),
+            }
+            content = (
+                f"{agent['name']} 正在从{agent['location']}前往{resolved_destination}。"
+                "位置会随路线推进更新，不会提前写成目的地。"
+            )
         elif action in destination_actions and destination in VALID_LOCATIONS and destination != agent["location"]:
             move_resident(conn, agent["id"], destination, commit=False)
             agent = dict(agent)
@@ -330,7 +493,7 @@ def process_world_agent_tick(conn, agent, world_time, tick_id, day, slot, observ
             resident_id=agent["id"],
             location=(
                 event_location
-                if spatial_context or destination in VALID_LOCATIONS
+                if spatial_context or "spatial_movement" in decision or destination in VALID_LOCATIONS
                 else agent["location"]
             ),
             payload={

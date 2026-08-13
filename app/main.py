@@ -10,22 +10,21 @@ import logging
 import math
 import os
 import time
-from contextlib import contextmanager
-from queue import Queue
-from threading import Lock, Thread
+from contextlib import asynccontextmanager, contextmanager
+from threading import Event, Lock, Thread
 from uuid import uuid4
 from xml.etree import ElementTree
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.db import get_connection, using_postgres
 from app.db.migration_runtime import (
-    BASELINE_REQUIRED_TABLES,
+    READINESS_REQUIRED_TABLES,
     create_migration_engine,
     get_alembic_config,
     get_current_revision,
@@ -89,7 +88,6 @@ from app.external_world.service import (
 from app.external_world.adapters import FixedRSSAdapter, OpenMeteoAdapter
 from app.api.external_router import router as external_information_router
 from app.api.news_router import router as news_router
-from app.api.simulation_router import router as simulation_router
 from app.api.system_router import router as system_router
 from app.api.research_router import router as research_router
 from app.longitudinal.router import router as longitudinal_router
@@ -212,7 +210,6 @@ from app.admin_models import AdminWorldEventRequest
 from app.research_models import CalibrationObservationRequest
 from services.newspaper import classify_candidate, headline as campus_news_headline, fallback_content as fallback_campus_news_content, publish_agent_news as publish_news_service, write_daily_diaries, collect_candidates
 from services.external_information import classify_information as classify_external_information, compact_sync_result as compact_external_sync_result, fetch_information, deliver_information, seed_recipients, spread_information, sync_into_world, maybe_auto_sync
-from services.simulation import run_ai_day as run_ai_day_service, prune_jobs, get_progress as get_simulation_job_progress, start_progress_job, start_stream
 from services import social_actions
 from services import policy_actions
 from services import observability
@@ -261,7 +258,21 @@ from tools.city_tools import (
     move_resident,
 )
 
-app = FastAPI(title="校园封闭世界 AI-Agent 沙盘系统", version="0.2.0")
+@asynccontextmanager
+async def app_lifespan(_app):
+    """Own the optional world writer for this ASGI process lifetime."""
+    start_world_runner_thread()
+    try:
+        yield
+    finally:
+        WORLD_RUNNER_STOP_EVENT.set()
+
+
+app = FastAPI(
+    title="真实地理校园 Agent 世界",
+    version="1.0.0",
+    lifespan=app_lifespan,
+)
 app.include_router(spatial_router)
 app.include_router(body_router)
 app.include_router(perception_router)
@@ -282,7 +293,6 @@ app.include_router(population_router)
 app.include_router(external_world_router)
 app.include_router(external_information_router)
 app.include_router(news_router)
-app.include_router(simulation_router)
 app.include_router(system_router)
 app.include_router(research_router)
 app.include_router(longitudinal_router)
@@ -304,12 +314,11 @@ app.mount("/js", StaticFiles(directory=str(PROJECT_ROOT / "frontend" / "js")), n
 THREE_MODULE_DIR = PROJECT_ROOT / "frontend" / "vendor" / "three"
 app.mount("/three", StaticFiles(directory=str(THREE_MODULE_DIR)), name="three")
 app.mount("/vendor", StaticFiles(directory=str(PROJECT_ROOT / "frontend" / "vendor")), name="vendor")
-SIMULATION_JOBS = {}
-SIMULATION_JOBS_LOCK = Lock()
 SOCIAL_SCHEMA_LOCK = Lock()
 SOCIAL_SCHEMA_READY = False
 WORLD_RUNNER_LOCK = Lock()
 WORLD_RUNNER_THREAD = None
+WORLD_RUNNER_STOP_EVENT = Event()
 WORLD_TICK_LOCK = Lock()
 WRITE_RATE_LIMIT_LOCK = Lock()
 WRITE_REQUESTS_BY_CLIENT = {}
@@ -514,55 +523,21 @@ DEFAULT_AGENT_PERSONALITY_TRAITS = {
 }
 
 from app.schema import (
-    CAMPUS_STATE_SQL, SPACE_SYSTEM_SQL, DEFAULT_SPACES, DEFAULT_ENV, ENV_COLUMN_TYPES,
-    AGENT_NEWS_SQL, AGENT_NEWS_COLUMN_TYPES, EXTERNAL_INFORMATION_SQL, AGENT_PROFILE_SQL, PROFILE_COLUMN_TYPES,
+    DEFAULT_ENV, DEFAULT_SPACES, ENV_COLUMN_TYPES,
 SOCIAL_SYSTEM_SQL, BEHAVIOR_SYSTEM_SQL, RELATIONSHIP_DYNAMIC_COLUMNS,
     LONG_TERM_GOAL_COLUMNS, AGENT_INFORMATION_COLUMNS, WORLD_RUNTIME_SQL, RESEARCH_SYSTEM_SQL,
     WORLD_RUNTIME_COLUMNS, WORLD_EVENT_STREAM_COLUMNS, WORLD_SNAPSHOT_COLUMNS,
     EXPERIMENT_RUN_COLUMNS,
 )
-
-
-class SchemaMigrationRequired(RuntimeError):
-    """Raised when the runtime database has not completed build-time migrations."""
-
-
-def ensure_table_columns(conn, table_name, column_types, *, allow_ddl=False):
-    columns = {
-        row["name"]
-        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    }
-    if not columns:
-        raise SchemaMigrationRequired(
-            f"Database table '{table_name}' is missing. Run the deployment schema "
-            "initialization before starting the web service."
-        )
-    missing_columns = [
-        (column, column_type)
-        for column, column_type in column_types.items()
-        if column not in columns
-    ]
-    if missing_columns and not allow_ddl:
-        names = ", ".join(column for column, _ in missing_columns)
-        raise SchemaMigrationRequired(
-            f"Database table '{table_name}' is missing columns: {names}. Run the "
-            "deployment migrations before starting the web service."
-        )
-    for column, column_type in missing_columns:
-        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column} {column_type}")
-
-
-def ensure_agent_profile_table(conn, *, allow_ddl=False):
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(agent_profiles)").fetchall()}
-    if not columns and allow_ddl:
-        conn.executescript(AGENT_PROFILE_SQL)
-    ensure_table_columns(
-        conn,
-        "agent_profiles",
-        PROFILE_COLUMN_TYPES,
-        allow_ddl=allow_ddl,
-    )
-
+from app.db.bootstrap_schema import (
+    SchemaMigrationRequired,
+    ensure_agent_news_system,
+    ensure_agent_profile_table,
+    ensure_campus_state_table,
+    ensure_external_information_system,
+    ensure_space_system,
+    ensure_table_columns,
+)
 
 def ensure_social_system_tables(conn, *, allow_ddl=False):
     global SOCIAL_SCHEMA_READY
@@ -963,56 +938,6 @@ def fetch_real_weather(latitude=BEIJING_LATITUDE, longitude=BEIJING_LONGITUDE):
     }
 
 
-def derive_environment_from_weather(base_values):
-    values = dict(base_values)
-    rainfall = int(values.get("rainfall", 0) or 0)
-    temperature = int(values.get("temperature", 24) or 24)
-    weather = values.get("weather", "晴")
-    activity_heat = int(values.get("activity_heat", 50) or 50)
-    exam_pressure = int(values.get("exam_pressure", 35) or 35)
-    assignment_pressure = int(values.get("assignment_pressure", 40) or 40)
-
-    outdoor_penalty = min(35, rainfall // 2)
-    heat_penalty = 10 if temperature >= 32 else 0
-    values["playground_crowd"] = clamp(int(values.get("playground_crowd", 40)) - outdoor_penalty - heat_penalty, 10, 100)
-    values["library_crowd"] = clamp(35 + exam_pressure // 2 + rainfall // 4, 10, 100)
-    values["canteen_crowd"] = clamp(int(values.get("canteen_crowd", 50)) + (10 if rainfall > 20 else 0), 10, 100)
-    values["commercial_crowd"] = clamp(35 + activity_heat // 2 - rainfall // 5 + (8 if temperature >= 30 else 0), 10, 100)
-    values["campus_flow"] = clamp(55 + activity_heat // 3 - rainfall // 4, 10, 100)
-    values["classroom_crowd"] = clamp(40 + assignment_pressure // 2, 10, 100)
-    values["dorm_crowd"] = clamp(int(values.get("dorm_crowd", 45)) + (12 if rainfall > 20 else 0), 10, 100)
-    values["study_atmosphere"] = clamp(35 + exam_pressure // 2 + assignment_pressure // 3, 10, 100)
-    values["traffic_status"] = "拥堵" if values["campus_flow"] > 75 or rainfall > 40 else "正常"
-    values["resource_pressure"] = clamp((values["canteen_crowd"] + values["library_crowd"] + values["classroom_crowd"]) // 3, 10, 100)
-    values["network_status"] = "拥堵" if values["dorm_crowd"] > 75 else "稳定"
-    values["safety_level"] = clamp(92 - rainfall // 8 - values["campus_flow"] // 12, 50, 100)
-    values["consumption_index"] = round(max(0.5, min(1.8, 0.7 + activity_heat / 120 + values["commercial_crowd"] / 240)), 2)
-    if exam_pressure > 75:
-        values["campus_mood"] = "紧张"
-    elif weather in {"小雨", "中雨", "大雨", "雷雨"}:
-        values["campus_mood"] = "低落"
-    elif activity_heat > 70:
-        values["campus_mood"] = "活跃"
-    else:
-        values["campus_mood"] = "平稳"
-    return values
-
-
-def save_environment_values(conn, day, values):
-    full_values = {key: values.get(key, default) for key, default in DEFAULT_ENV.items()}
-    columns = list(DEFAULT_ENV.keys())
-    assignments = ", ".join([f"{column} = excluded.{column}" for column in columns])
-    placeholders = ", ".join(["?"] * (len(columns) + 1))
-    conn.execute(
-        f"""
-        INSERT INTO campus_state (day, {', '.join(columns)})
-        VALUES ({placeholders})
-        ON CONFLICT(day) DO UPDATE SET {assignments}
-        """,
-        [day] + [full_values[column] for column in columns],
-    )
-
-
 from app.environment import service as environment_service
 
 
@@ -1193,70 +1118,6 @@ def row_to_dict(row):
 
 def rows_to_dicts(rows):
     return [dict(row) for row in rows]
-
-
-def ensure_campus_state_table(conn, *, allow_ddl=False):
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(campus_state)").fetchall()}
-    if not columns and allow_ddl:
-        conn.executescript(CAMPUS_STATE_SQL)
-    ensure_table_columns(
-        conn,
-        "campus_state",
-        ENV_COLUMN_TYPES,
-        allow_ddl=allow_ddl,
-    )
-
-
-def ensure_space_system(conn, *, allow_ddl=False):
-    space_columns = {
-        row["name"] for row in conn.execute("PRAGMA table_info(campus_spaces)").fetchall()
-    }
-    event_columns = {
-        row["name"] for row in conn.execute("PRAGMA table_info(campus_events)").fetchall()
-    }
-    if (not space_columns or not event_columns) and allow_ddl:
-        conn.executescript(SPACE_SYSTEM_SQL)
-    ensure_table_columns(conn, "campus_spaces", {})
-    ensure_table_columns(conn, "campus_events", {})
-    existing_codes = {
-        row["code"]
-        for row in conn.execute("SELECT code FROM campus_spaces").fetchall()
-    }
-    for space in DEFAULT_SPACES:
-        if space[0] in existing_codes:
-            continue
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO campus_spaces
-            (code, name, location, capacity, open_hour, close_hour, status, crowd_field, purpose)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            space,
-        )
-
-
-def ensure_agent_news_system(conn, *, allow_ddl=False):
-    if allow_ddl:
-        conn.executescript(AGENT_NEWS_SQL)
-    ensure_table_columns(
-        conn,
-        "agent_news_posts",
-        AGENT_NEWS_COLUMN_TYPES,
-        allow_ddl=allow_ddl,
-    )
-
-
-def ensure_external_information_system(conn, *, allow_ddl=False):
-    if allow_ddl:
-        conn.executescript(EXTERNAL_INFORMATION_SQL)
-    ensure_table_columns(
-        conn,
-        "agent_information",
-        AGENT_INFORMATION_COLUMNS,
-        allow_ddl=allow_ddl,
-    )
-
-
 
 
 def seed_world_runtime_rules(conn):
@@ -1716,38 +1577,6 @@ def location_options_for_context(role, hour, weather="", current_location="", co
     _refresh_state_environment_runtime()
     return state_environment.location_options_for_context(role, hour, weather, current_location, conn, env, agent)
 
-def space_hours_by_location():
-    return {
-        location: {"open_hour": int(open_hour), "close_hour": int(close_hour)}
-        for _, _, location, _, open_hour, close_hour, _, _, _ in DEFAULT_SPACES
-    }
-
-
-def is_location_open_at_hour(location, hour):
-    if location not in VALID_LOCATIONS:
-        return False
-    hours = space_hours_by_location().get(location)
-    if not hours:
-        return True
-    open_hour = hours["open_hour"]
-    close_hour = hours["close_hour"]
-    if close_hour == 24:
-        return hour >= open_hour
-    if open_hour <= close_hour:
-        return open_hour <= hour < close_hour
-    return hour >= open_hour or hour < close_hour
-
-
-def get_campus_environment(conn, day=None):
-    return environment_service.get_campus_environment(
-        conn,
-        day,
-        ensure_state_table=ensure_campus_state_table,
-        current_day=get_current_day,
-        default_environment=DEFAULT_ENV,
-        build_modules=build_environment_modules,
-    )
-
 from app.world_runtime import planning_decision
 planning_decision.configure(**globals())
 apply_wellbeing_priority_to_decision = planning_decision.apply_wellbeing_priority_to_decision
@@ -2171,27 +2000,6 @@ def record_simulation_log(conn, resident_id, perception, decision_data, executio
     return cursor.lastrowid
 
 
-def run_lifecycle_step(conn, resident_id):
-    before = get_agent_module_state(conn, resident_id)
-    perception = perceive_environment(conn, resident_id)
-    decision_data = decide_agent_action(conn, resident_id)
-    execution = execute_decision(conn, resident_id, decision_data["decision"])
-    feedback = apply_environment_feedback(conn, resident_id, execution["action"], execution["result"])
-    after = get_agent_module_state(conn, resident_id)
-    record_simulation_log(conn, resident_id, perception, decision_data, execution, feedback, before, after)
-    conn.commit()
-    env_after = get_campus_environment(conn)
-    return {
-        "loop": "perceive -> decide -> act -> feedback -> memory",
-        "resident_id": resident_id,
-        "before": before,
-        "perception": perception,
-        "decision": decision_data["decision"],
-        "action_result": execution,
-        "environment_feedback": feedback,
-        "after": after,
-        "environment_after": env_after,
-    }
 
 
 
@@ -2378,23 +2186,21 @@ def fallback_runtime_decision(agent, step, reason, mode):
 def nearby_interaction_target(conn, agent_id, location):
     row = conn.execute(
         """
-        SELECT id, name FROM residents
-        WHERE id != ? AND location = ?
-        ORDER BY RANDOM()
+        SELECT other.id, other.name, node.id AS node_id, node.name AS location
+        FROM agent_spatial_states actor_state
+        JOIN agent_spatial_states other_state
+          ON other_state.current_node_id = actor_state.current_node_id
+         AND other_state.resident_id != actor_state.resident_id
+         AND other_state.movement_status IN ('idle', 'arrived')
+        JOIN residents other ON other.id = other_state.resident_id
+        JOIN spatial_nodes node ON node.id = actor_state.current_node_id
+        WHERE actor_state.resident_id = ?
+          AND actor_state.movement_status IN ('idle', 'arrived')
+          AND node.name = ?
+        ORDER BY other.id
         LIMIT 1
         """,
         (agent_id, location),
-    ).fetchone()
-    if row:
-        return dict(row)
-    row = conn.execute(
-        """
-        SELECT id, name FROM residents
-        WHERE id != ?
-        ORDER BY RANDOM()
-        LIMIT 1
-        """,
-        (agent_id,),
     ).fetchone()
     return dict(row) if row else None
 
@@ -2534,10 +2340,10 @@ def world_runner_loop():
         advance_tick=advance_world_tick,
         http_exception_type=HTTPException,
         logger=logger,
+        stop_event=WORLD_RUNNER_STOP_EVENT,
     )
 
 
-@app.on_event("startup")
 def start_world_runner_thread():
     environment = os.getenv("APP_ENV", "local").strip().lower()
     if environment not in {"", "local", "development", "test"} and not os.getenv(
@@ -2551,6 +2357,7 @@ def start_world_runner_thread():
     with WORLD_RUNNER_LOCK:
         if WORLD_RUNNER_THREAD and WORLD_RUNNER_THREAD.is_alive():
             return
+        WORLD_RUNNER_STOP_EVENT.clear()
         WORLD_RUNNER_THREAD = Thread(target=world_runner_loop, daemon=True)
         WORLD_RUNNER_THREAD.start()
         logger.warning("World runner started")
@@ -2587,7 +2394,7 @@ def health_ready():
         engine = create_migration_engine()
         current_revision = get_current_revision(engine)
         head_revision = get_head_revision(get_alembic_config())
-        missing_tables = sorted(BASELINE_REQUIRED_TABLES - set(list_business_tables(engine)))
+        missing_tables = sorted(READINESS_REQUIRED_TABLES - set(list_business_tables(engine)))
     except Exception:
         logger.exception("Readiness check failed")
         raise HTTPException(status_code=503, detail="database_or_schema_unavailable")
@@ -2622,7 +2429,7 @@ def share_image():
 def ai_test():
     if not is_llm_configured():
         raise HTTPException(status_code=503, detail="当前环境未配置 LLM_API_KEY 或 LLM_API_URL，世界将使用规则模式运行。")
-    prompt = "请用一句话说明你已接入校园封闭世界 AI-Agent 系统。"
+    prompt = "请用一句话说明你已接入真实地理校园 Agent 世界。"
     return {"message": "AI API 调用成功", "result": ask_llm(prompt)}
 
 
@@ -3686,7 +3493,7 @@ def newspaper_today():
             (day,),
         ).fetchall()
         return {
-            "title": f"校园封闭世界日报 第 {day} 天",
+            "title": f"校园世界日报 第 {day} 天",
             "environment": env,
             "events": rows_to_dicts(events),
             "agent_modules": get_all_agent_module_states(conn),
@@ -3728,7 +3535,7 @@ app.state.backfill_agent_daily_diaries = backfill_agent_daily_diaries
 
 def ai_newspaper_today():
     data = newspaper_today()
-    prompt = f"请把下面校园封闭世界数据写成一份简短校园日报，分为标题、环境、主要事件、趋势判断：{json_dumps(data, ensure_ascii=False)}"
+    prompt = f"请把下面校园世界数据写成一份简短校园日报，分为标题、环境、主要事件、趋势判断：{json_dumps(data, ensure_ascii=False)}"
     return {"day": data["title"], "newspaper": ask_llm(prompt), "source": data}
 
 
@@ -3824,70 +3631,3 @@ def act_all_agents():
 app.state.decide_agent = decide_agent
 app.state.act_agent = act_agent
 app.state.act_all_agents = act_all_agents
-
-
-def simulate_lifecycle_step(resident_id: int):
-    with get_connection() as conn:
-        return run_lifecycle_step(conn, resident_id)
-
-
-def simulate_lifecycle_round():
-    with get_connection() as conn:
-        agents = conn.execute("SELECT id FROM residents ORDER BY id").fetchall()
-        results = []
-        for agent in agents:
-            results.append(run_lifecycle_step(conn, agent["id"]))
-        day = get_current_day(conn)
-        add_event(conn, day, "lifecycle_round", f"第 {day} 天完成一轮 Agent-环境交互循环，共 {len(results)} 个 Agent。")
-        conn.commit()
-        return {
-            "message": f"{len(results)} 个 Agent 完成感知-决策-行动-反馈循环",
-            "loop": "perceive -> decide -> act -> feedback -> memory",
-            "results": results,
-        }
-
-
-def run_simulate_ai_day(progress=None):
-    return run_ai_day_service(progress, connection_factory=get_connection, logger=logger, json_dumps=json_dumps, current_day=get_current_day, auto_environment=auto_update_environment, recover_agents=recover_agents_for_new_day, spread_information=spread_external_information, get_module_state=get_agent_module_state, perceive=perceive_environment, decide=decide_agent_action, execute=execute_decision, apply_feedback=apply_environment_feedback, get_resident=get_resident, add_event=add_event, add_memory=add_memory, record_log=record_simulation_log, advance_groups=advance_group_goals, write_diaries=write_agent_daily_diaries, publish_news=publish_agent_news)
-
-
-def simulate_ai_day():
-    return run_simulate_ai_day()
-
-
-app.state.simulate_lifecycle_step = simulate_lifecycle_step
-app.state.simulate_lifecycle_round = simulate_lifecycle_round
-app.state.simulate_ai_day = simulate_ai_day
-
-
-def prune_simulation_jobs(max_age_seconds=3600):
-    return prune_jobs(SIMULATION_JOBS, SIMULATION_JOBS_LOCK, time.time, max_age_seconds)
-
-
-def start_simulate_ai_day_progress():
-    prune_simulation_jobs()
-    return start_progress_job(SIMULATION_JOBS, SIMULATION_JOBS_LOCK, now=time.time, new_id=lambda: uuid4().hex, logger=logger, run=run_simulate_ai_day, thread_factory=Thread)
-
-
-app.state.start_simulate_ai_day_progress = start_simulate_ai_day_progress
-
-
-def get_simulate_ai_day_progress(job_id: str, after: int = 0):
-    return get_simulation_job_progress(SIMULATION_JOBS, SIMULATION_JOBS_LOCK, job_id, after, logger=logger, not_found=lambda: HTTPException(status_code=404, detail="模拟任务不存在或已过期"))
-
-
-app.state.get_simulation_progress = get_simulate_ai_day_progress
-
-
-def simulate_ai_day_stream():
-    events = start_stream(run_simulate_ai_day, queue_factory=Queue, thread_factory=Thread, logger=logger)
-    def stream_events():
-        while True:
-            event = events.get()
-            if event is None:
-                break
-            yield json_dumps(event, ensure_ascii=False) + "\n"
-    return StreamingResponse(stream_events(), media_type="application/x-ndjson; charset=utf-8")
-
-
-app.state.simulate_ai_day_stream = simulate_ai_day_stream

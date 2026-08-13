@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Optional
 
 from app.spatial.repository import SpatialRepository
+from app.spatial.physical_state_service import (
+    list_spatial_edge_physical_states,
+    list_spatial_physical_states,
+)
 
 
 class SpatialStateNotInitializedError(LookupError):
@@ -124,6 +129,11 @@ class SpatialService:
         checksum = hashlib.sha256(
             json.dumps(checksum_source, sort_keys=True).encode("utf-8")
         ).hexdigest()
+        physical_states = list_spatial_physical_states(
+            self.repository.connection,
+            world_key=effective_world_key,
+            node_ids=node_ids,
+        )
         return {
             "coordinate_system": "right-handed-meters",
             "schema_version": 1,
@@ -133,6 +143,16 @@ class SpatialService:
             "wgs84_bounds": wgs84_bounds,
             "nodes": nodes,
             "edges": edges,
+            "physical_states": physical_states,
+            "edge_physical_states": list_spatial_edge_physical_states(
+                self.repository.connection, world_key=world_key
+            ),
+        }
+
+    def get_physical_states(self, world_key=None, node_ids=None):
+        return {
+            "physical_states": list_spatial_physical_states(self.repository.connection, world_key=world_key, node_ids=node_ids),
+            "edge_physical_states": list_spatial_edge_physical_states(self.repository.connection, world_key=world_key),
         }
 
     def list_worlds(self):

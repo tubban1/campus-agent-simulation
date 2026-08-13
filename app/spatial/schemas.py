@@ -53,6 +53,7 @@ class SceneGraphResponse(BaseModel):
     wgs84_bounds: Optional[list[float]] = None
     nodes: list[SpatialNodeResponse]
     edges: list[SpatialEdgeResponse]
+    physical_states: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SpatialWorldItemResponse(BaseModel):
@@ -70,6 +71,15 @@ class SpatialWorldItemResponse(BaseModel):
 
 class SpatialWorldsResponse(BaseModel):
     worlds: list[SpatialWorldItemResponse]
+
+
+class PhysicalStateMutationRequest(BaseModel):
+    world_key: str = Field(min_length=1, max_length=64)
+    node_id: Optional[int] = Field(default=None, ge=1)
+    edge_id: Optional[int] = Field(default=None, ge=1)
+    access_status: str = Field(default="closed", pattern="^(open|restricted|closed)$")
+    duration_minutes: int = Field(default=60, ge=1, le=10080)
+    title: str = Field(default="地图物理状态更新", min_length=1, max_length=120)
 
 
 class OccupancyItemResponse(BaseModel):

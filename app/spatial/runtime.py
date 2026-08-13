@@ -75,10 +75,28 @@ def _load_nodes(conn):
 
 
 def _load_edges(conn):
+    dynamic = {}
+    try:
+        now = datetime.now(timezone.utc)
+        query = """SELECT edge_id, access_status, travel_factor FROM spatial_edge_physical_states
+                   WHERE expires_at IS NULL OR expires_at > ?"""
+        result = conn.exec_driver_sql(query, (now,)) if hasattr(conn, "exec_driver_sql") else conn.execute(query, (now,))
+        for raw in result.fetchall():
+            row = dict(raw._mapping) if hasattr(raw, "_mapping") else dict(raw)
+            dynamic[int(row["edge_id"])] = row
+    except Exception:
+        # Schema readiness prevents this in production; isolated topology
+        # tests deliberately omit optional physical-state tables.
+        dynamic = {}
     edges = []
-    for row in conn.execute("SELECT * FROM spatial_edges ORDER BY id").fetchall():
-        item = dict(row)
+    result = conn.exec_driver_sql("SELECT * FROM spatial_edges ORDER BY id") if hasattr(conn, "exec_driver_sql") else conn.execute("SELECT * FROM spatial_edges ORDER BY id")
+    for raw in result.fetchall():
+        item = dict(raw._mapping) if hasattr(raw, "_mapping") else dict(raw)
         item["properties"] = _json_value(item.get("properties"), {})
+        state = dynamic.get(int(item["id"]))
+        if state:
+            item["status"] = state["access_status"]
+            item["weather_factor"] = float(item.get("weather_factor") or 1.0) * float(state.get("travel_factor") or 1.0)
         edges.append(item)
     return edges
 

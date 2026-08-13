@@ -524,7 +524,7 @@ Render 发布流程：
 
 生产 migration 失败时不得继续启动新版本应用。
 
-`scripts/init_campus.py` 不得用于生产发布；种子数据必须通过幂等 migration 或独立一次性命令写入。
+`scripts/seed_fresh_residents.py` 只在全新世界 bootstrap 中运行；种子数据必须通过显式独立命令写入。
 
 ## 13. 测试策略
 

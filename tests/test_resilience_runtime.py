@@ -58,7 +58,7 @@ class ResilienceRuntimeTest(unittest.TestCase):
         main.SOCIAL_SCHEMA_READY = False
         main.WORLD_SCHEMA_READY = False
         main.ensure_campus_state_table(conn, allow_ddl=True)
-        main.ensure_space_system(conn, allow_ddl=True)
+        main.ensure_space_system(conn, allow_ddl=True, seed_demo_spaces=True)
         main.ensure_external_information_system(conn, allow_ddl=True)
         main.ensure_world_runtime_tables(conn, allow_ddl=True)
         conn.commit()
@@ -218,4 +218,3 @@ class ResilienceRuntimeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

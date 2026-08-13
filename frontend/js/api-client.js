@@ -52,23 +52,6 @@ export const ApiClient = {
     }
     if (!res.ok) throw new Error(`生命历程接口失败: ${res.status}`);
     return await res.json();
-  },
-
-  async postSimulate(days = 1) {
-    const adminToken = localStorage.getItem("ADMIN_TOKEN") || "";
-    const headers = { "Content-Type": "application/json" };
-    if (adminToken) headers["X-Admin-Token"] = adminToken;
-    const res = await fetch(`/api/simulate?days=${days}`, { method: "POST", headers });
-    if (!res.ok) throw new Error(`模拟推进失败: ${res.status}`);
-    return await res.json();
-  },
-
-  async postTick(ticks = 1) {
-    const adminToken = localStorage.getItem("ADMIN_TOKEN") || "";
-    const headers = { "Content-Type": "application/json" };
-    if (adminToken) headers["X-Admin-Token"] = adminToken;
-    const res = await fetch(`/api/tick?ticks=${ticks}`, { method: "POST", headers });
-    if (!res.ok) throw new Error(`tick 推进失败: ${res.status}`);
-    return await res.json();
   }
+
 };

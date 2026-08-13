@@ -174,6 +174,88 @@ def _store_spatial_memory(conn, observation, observed_at):
     )
 
 
+def _capture_current_physical_observations(conn, agent_rows, world_time, tick_id, branch_key):
+    """Record only directly observed local conditions, never a world-wide feed."""
+    try:
+        states = {
+            int(row["node_id"]): dict(row)
+            for row in conn.execute(
+                """
+                SELECT node_id, crowd_density, noise_db, precipitation,
+                       illumination, access_status, version, observed_at
+                FROM spatial_physical_states
+                """
+            ).fetchall()
+        }
+    except Exception:
+        return []
+
+    captured = []
+    observed_at = world_time.isoformat()
+    for raw_agent in agent_rows:
+        agent = dict(raw_agent)
+        node_id = int(agent["current_node_id"])
+        state = states.get(node_id)
+        if not state:
+            continue
+        # Normal, quiet, open space needs no new cognitive record.  Physical
+        # facts become memories only when they can influence a decision.
+        crowd = float(state.get("crowd_density") or 0)
+        noise = float(state.get("noise_db") or 0)
+        rain = float(state.get("precipitation") or 0)
+        access = str(state.get("access_status") or "open")
+        if access == "open" and crowd < 0.35 and noise < 55 and rain <= 0:
+            continue
+        subject_id = f"node:{node_id}:physical:{state.get('version', 1)}"
+        existing = conn.execute(
+            """SELECT id FROM agent_observations
+               WHERE observer_resident_id = ? AND subject_id = ?
+                 AND fact_type = 'spatial_physical_state' AND branch_key = ?
+               LIMIT 1""",
+            (agent["resident_id"], subject_id, branch_key),
+        ).fetchone()
+        if existing:
+            continue
+        summary = (
+            f"直接观察：当前位置物理状态为{access}；"
+            f"拥挤度{round(crowd * 100)}%，噪声{round(noise)}dB，降水{rain:g}。"
+        )
+        inserted = conn.execute(
+            """
+            INSERT INTO agent_observations
+            (observer_resident_id, tick_id, source_event_id, origin_node_id,
+             subject_type, subject_id, modality, fact_type, summary,
+             distance_meters, confidence, error_margin, observed_at,
+             branch_key, metadata)
+            VALUES (?, ?, NULL, ?, 'location', ?, 'direct',
+                    'spatial_physical_state', ?, 0, 96, 1, ?, ?, ?)
+            """,
+            (
+                agent["resident_id"], tick_id, node_id, subject_id, summary,
+                observed_at, branch_key,
+                json.dumps({"physical_state": state, "observation_scope": "current_node"}, default=str),
+            ),
+        ).rowcount
+        if not inserted:
+            continue
+        observation_id = conn.execute(
+            "SELECT id FROM agent_observations WHERE observer_resident_id = ? AND subject_id = ? AND branch_key = ?",
+            (agent["resident_id"], subject_id, branch_key),
+        ).fetchone()["id"]
+        observation = {
+            "id": int(observation_id), "observer_resident_id": int(agent["resident_id"]),
+            "source_event_id": None, "origin_node_id": node_id,
+            "subject_type": "location", "subject_id": subject_id,
+            "modality": "direct", "fact_type": "spatial_physical_state",
+            "summary": summary, "distance_meters": 0.0, "confidence": 96,
+            "error_margin": 1.0, "branch_key": branch_key,
+        }
+        _upsert_belief(conn, observation, observed_at)
+        _store_spatial_memory(conn, observation, observed_at)
+        captured.append(observation)
+    return captured
+
+
 def capture_tick_observations(conn, world_time, tick_id, day, branch_key="main"):
     if not perception_runtime_available(conn):
         return []
@@ -211,7 +293,9 @@ def capture_tick_observations(conn, world_time, tick_id, day, branch_key="main")
         ).fetchall()
         if row["event_type"] not in IGNORED_EVENT_TYPES
     ]
-    captured = []
+    captured = _capture_current_physical_observations(
+        conn, agent_rows, world_time, tick_id, branch_key
+    )
     for raw_agent in agent_rows:
         agent = dict(raw_agent)
         observer_id = int(agent["resident_id"])

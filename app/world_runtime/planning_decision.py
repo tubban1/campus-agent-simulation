@@ -513,7 +513,7 @@ def decide_agent_action(conn, resident_id):
     ).fetchall()
 
     prompt = f"""
-你正在驱动一个校园封闭世界中的 Agent。
+你正在驱动一个真实地理校园世界中的 Agent。
 
 当前日期：第 {day} 天
 校园环境：{json_dumps(env, ensure_ascii=False)}

@@ -13,6 +13,7 @@ from app.db.engine import DEFAULT_DB_PATH
 from app.db.migration_runtime import (
     BASELINE_REQUIRED_TABLES,
     BASELINE_REVISION,
+    READINESS_REQUIRED_TABLES,
     get_alembic_config,
     get_current_revision,
     get_head_revision,
@@ -22,13 +23,31 @@ from scripts.migrate_db import migrate_database
 
 
 class DatabaseMigrationFoundationTest(unittest.TestCase):
+    def test_readiness_covers_current_spatial_runtime_contract(self):
+        self.assertTrue({
+            "spatial_nodes",
+            "spatial_edges",
+            "spatial_physical_states",
+            "spatial_edge_physical_states",
+            "spatial_facility_states",
+            "spatial_facility_work_orders",
+            "social_interaction_sessions",
+            "social_session_participants",
+            "social_session_turns",
+        }.issubset(READINESS_REQUIRED_TABLES))
+
     @staticmethod
     def create_required_baseline_tables(db_path):
         connection = sqlite3.connect(db_path)
         for table_name in BASELINE_REQUIRED_TABLES:
-            connection.execute(
-                f"CREATE TABLE {table_name} (id INTEGER PRIMARY KEY)"
-            )
+            if table_name == "simulation_state":
+                connection.execute(
+                    "CREATE TABLE simulation_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                )
+            else:
+                connection.execute(
+                    f"CREATE TABLE {table_name} (id INTEGER PRIMARY KEY)"
+                )
         connection.commit()
         connection.close()
 
@@ -204,10 +223,10 @@ class DatabaseMigrationFoundationTest(unittest.TestCase):
             },
             clear=False,
         ):
-            with self.assertRaisesRegex(RuntimeError, "no campus schema"):
+            with self.assertRaisesRegex(RuntimeError, "no fresh-world schema"):
                 migrate_database()
 
-    def test_migration_runner_reports_ready_legacy_database(self):
+    def test_migration_runner_rejects_unmarked_preexisting_schema(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "legacy.db"
             self.create_required_baseline_tables(db_path)
@@ -216,12 +235,8 @@ class DatabaseMigrationFoundationTest(unittest.TestCase):
                 {"DATABASE_URL": "", "DB_PATH": str(db_path)},
                 clear=False,
             ):
-                result = migrate_database()
-                checked = migrate_database(check_only=True)
-
-            self.assertTrue(result["ready"])
-            self.assertEqual(result["current"], result["head"])
-            self.assertTrue(checked["ready"])
+                with self.assertRaisesRegex(RuntimeError, "not a freshly bootstrapped world"):
+                    migrate_database()
 
     def test_migration_runner_rejects_incomplete_legacy_schema(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -1,6 +1,7 @@
 """Composable orchestration helpers for a world tick."""
 
 import os
+import logging
 
 
 def start_world_tick(
@@ -200,6 +201,8 @@ def run_pre_agent_subsystems(
         )
         if not weather_sync.get("skipped") and not weather_sync.get("failed"):
             environment = get_campus_environment(conn, day)
+        from app.spatial.facility_service import advance_facility_lifecycle
+        facility_updates = advance_facility_lifecycle(conn, day=day, hour=world_time.hour)
         start_event = append_world_event(
             "world_tick_started",
             "世界 tick 开始",
@@ -212,6 +215,7 @@ def run_pre_agent_subsystems(
                 "rule_based_plans": ensure_result["rule_based_plans"],
                 "weather": environment.get("weather"),
                 "weather_sync": weather_sync,
+                "facility_lifecycle": facility_updates,
                 "mode": "core",
                 "day_sync": day_sync,
             },
@@ -232,6 +236,24 @@ def run_pre_agent_subsystems(
             slot=slot,
             parent_event_id=start_event["id"],
         )
+        # Movement changes local crowding immediately.  Refresh only touched
+        # nodes here; the full-world weather refresh stays out of the tick hot
+        # path for the imported 13k-node campus.
+        try:
+            from app.spatial.physical_state_service import refresh_spatial_physical_states
+            touched = [item.get("current_node_id") for item in movement_results if item.get("current_node_id")]
+            touched.extend(item.get("node_id") for item in facility_updates["events"] if item.get("node_id"))
+            worlds = conn.execute("SELECT DISTINCT world_key FROM spatial_nodes").fetchall()
+            for world in worlds:
+                refresh_spatial_physical_states(
+                    conn,
+                    world_key=world["world_key"],
+                    environment=environment,
+                    observed_at=world_time.isoformat(),
+                    node_ids=touched,
+                )
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Unable to refresh moved-node physical states: %s", exc)
         conn.commit()
         skipped = {"skipped": True, "reason": "disabled_in_core_tick"}
         return {
@@ -239,6 +261,7 @@ def run_pre_agent_subsystems(
             "start_event": start_event,
             "local_observations": [],
             "body_states": body_states,
+            "facility_updates": facility_updates,
             "night_dreams": night_dreams,
             "movement_results": movement_results,
             "movement_events": movement_events,
@@ -299,6 +322,8 @@ def run_pre_agent_subsystems(
         resilience_updates = process_resilience_runtime(conn, world_time)
     else:
         resilience_updates = {"skipped": True, "reason": "disabled_in_realtime_tick"}
+    from app.spatial.facility_service import advance_facility_lifecycle
+    facility_updates = advance_facility_lifecycle(conn, day=day, hour=world_time.hour)
     start_event = append_world_event(
         "world_tick_started",
         "世界 tick 开始",
@@ -319,6 +344,7 @@ def run_pre_agent_subsystems(
             },
             "resilience_updates": resilience_updates,
             "population_updates": population_updates,
+            "facility_lifecycle": facility_updates,
             "external_world_updates": external_world_updates,
             "day_sync": day_sync,
         },
@@ -345,6 +371,20 @@ def run_pre_agent_subsystems(
         slot=slot,
         parent_event_id=start_event["id"],
     )
+    try:
+        from app.spatial.physical_state_service import refresh_spatial_physical_states
+        touched = [item.get("current_node_id") for item in movement_results if item.get("current_node_id")]
+        touched.extend(item.get("node_id") for item in facility_updates["events"] if item.get("node_id"))
+        for world in conn.execute("SELECT DISTINCT world_key FROM spatial_nodes").fetchall():
+            refresh_spatial_physical_states(
+                conn,
+                world_key=world["world_key"],
+                environment=environment,
+                observed_at=world_time.isoformat(),
+                node_ids=touched,
+            )
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Unable to refresh moved-node physical states: %s", exc)
     multiscale_updates = run_due_world_updates(
         conn,
         world_time,
@@ -380,6 +420,7 @@ def run_pre_agent_subsystems(
         "start_event": start_event,
         "local_observations": local_observations,
         "body_states": body_states,
+        "facility_updates": facility_updates,
         "night_dreams": night_dreams,
         "movement_results": movement_results,
         "movement_events": movement_events,

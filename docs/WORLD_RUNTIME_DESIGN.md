@@ -363,7 +363,7 @@ world_timezone = Asia/Shanghai
 
 ### 仿真日与真实日期同步
 
-旧的 `/api/simulate/ai-day` 会在点击按钮时推进 `simulation_state.current_day`。World Runtime 进入持续运行模式后，`current_day` 不再只依赖这个旧入口，而是由真实日期自动推进：
+`current_day` 由连续世界时间自动推进：
 
 - 系统使用 `world_runtime.world_time` / `get_world_now()` 作为真实时间锚点。
 - `simulation_state.world_runtime_current_day_date` 保存当前仿真日对应的真实日期。
@@ -371,7 +371,7 @@ world_timezone = Asia/Shanghai
 - 跨天时会为新的一天恢复 Agent 精力、重置时间预算、生成当天环境，并写入 `world_day_rollover` 事件。
 - 如果服务离线多天后恢复，系统最多一次补 7 天，避免异常时间跳跃把运行数据拉坏。
 
-因此，线上世界应该表现为“真实时间连续运行”：一天过去，仿真日也会进入下一天；旧的“模拟一天”入口只保留为 admin/debug 工具。
+因此，线上世界应该表现为“真实时间连续运行”：一天过去，仿真日也会进入下一天。唯一写入入口是后台 runner 或受管理员授权的单次 tick。
 
 每个计划窗口开始时，系统为 Agent 生成一个结构化计划。计划不是强制脚本，而是未来 8 小时的行动倾向。
 
@@ -832,7 +832,6 @@ admin > participant > observer > automatic background
 - 前端通过 `/api/world/runtime` 和 `/api/world/events` 展示运行状态和实时事件流。
 - runtime 使用 `world_update_schedules` / `world_update_runs` 执行多尺度聚合：空间活动每小时、社会动态每 8 小时、制度与公共资源每日更新；`/api/world/update-schedules` 和 `/api/world/update-runs` 提供只读审计。
 - Admin 控制使用 `ADMIN_TOKEN`，支持 start、pause、manual tick 和事件注入。
-- 旧 `/api/simulate/ai-day` 保留为 admin/debug 入口，不再作为主体验。
 
 v1 暂不做：
 

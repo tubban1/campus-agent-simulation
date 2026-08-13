@@ -122,7 +122,7 @@ curl http://127.0.0.1:8000/api/state
 curl "http://127.0.0.1:8000/api/agents/1/simulation-logs?limit=1"
 ```
 
-涉及模拟推进时注意：`/api/simulate/ai-day` 会写入当前 `.env` 指向的数据库。
+涉及模拟推进时注意：后台 runner 与 `/api/admin/world/tick` 会写入当前 `.env` 指向的数据库。
 
 ## 冲突处理
 
@@ -160,8 +160,8 @@ git push --force-with-lease
 
 重要提醒：
 
-- `scripts/init_campus_safe.py` 是安全初始化，已有数据会跳过。
-- `scripts/init_campus.py` 会重置核心校园数据，线上环境谨慎使用。
+- `scripts/deploy_database.py` 只创建全新的当前版本世界。
+- `scripts/reset_fresh_world.py` 会删除确认的 schema；提交涉及它时必须明确说明目标环境。
 - `.env` 指向线上 Supabase 时，本地接口也会写线上数据库。
 
 ## 提交信息规范
