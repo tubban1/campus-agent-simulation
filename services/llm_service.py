@@ -1,13 +1,23 @@
 import requests
+import os
+from typing import Optional
 
 from app.config import LLM_API_KEY, LLM_API_URL
+
+
+def llm_request_timeout_seconds() -> int:
+    try:
+        configured = int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "20"))
+    except ValueError:
+        configured = 20
+    return max(5, min(configured, 120))
 
 
 def is_llm_configured() -> bool:
     return bool(LLM_API_KEY.strip() and LLM_API_URL.strip())
 
 
-def ask_llm(prompt: str) -> str:
+def ask_llm(prompt: str, *, timeout_seconds: Optional[int] = None) -> str:
     if not LLM_API_KEY:
         raise RuntimeError("缺少 LLM_API_KEY，请检查 .env 文件")
 
@@ -36,7 +46,11 @@ def ask_llm(prompt: str) -> str:
         LLM_API_URL,
         headers=headers,
         json=body,
-        timeout=120,
+        timeout=(
+            max(1, min(int(timeout_seconds), llm_request_timeout_seconds()))
+            if timeout_seconds is not None
+            else llm_request_timeout_seconds()
+        ),
     )
 
     response.raise_for_status()

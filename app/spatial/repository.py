@@ -14,23 +14,212 @@ from app.spatial.models import (
 )
 
 
+def _parse_properties(val):
+    if isinstance(val, str):
+        try:
+            import json
+            return json.loads(val)
+        except Exception:
+            return {}
+    return val or {}
+
+
 class SpatialRepository:
     def __init__(self, connection: Connection):
         self.connection = connection
 
-    def list_nodes(self):
-        return list(
-            self.connection.execute(
-                select(spatial_nodes).order_by(spatial_nodes.c.id)
-            ).mappings()
-        )
+    def _execute_rows(self, query):
+        res = self.connection.execute(query)
+        if hasattr(res, "mappings"):
+            return [dict(r) for r in res.mappings()]
+        if hasattr(res, "fetchall"):
+            return [dict(r) for r in res.fetchall()]
+        return [dict(r) for r in res]
 
-    def list_edges(self):
-        return list(
-            self.connection.execute(
-                select(spatial_edges).order_by(spatial_edges.c.id)
-            ).mappings()
-        )
+    def _fetch_all_nodes_raw(self):
+        try:
+            return self._execute_rows(select(spatial_nodes).order_by(spatial_nodes.c.id))
+        except Exception:
+            try:
+                raw_rows = self._execute_rows(text("SELECT * FROM spatial_nodes ORDER BY id"))
+                nodes = []
+                for row in raw_rows:
+                    node_dict = dict(row)
+                    props = _parse_properties(node_dict.get("properties"))
+                    node_dict.setdefault("world_key", props.get("world_key", "default"))
+                    node_dict.setdefault("longitude", None)
+                    node_dict.setdefault("latitude", None)
+                    node_dict.setdefault("elevation_m", 0.0)
+                    node_dict.setdefault("geometry_json", None)
+                    node_dict.setdefault("source_element_id", None)
+                    nodes.append(node_dict)
+                return nodes
+            except Exception as err:
+                import logging
+                logging.warning("Error reading spatial_nodes fallback: %s", err)
+                return []
+
+    def _fetch_all_edges_raw(self):
+        try:
+            return self._execute_rows(select(spatial_edges).order_by(spatial_edges.c.id))
+        except Exception:
+            try:
+                return self._execute_rows(text("SELECT * FROM spatial_edges ORDER BY id"))
+            except Exception as err:
+                import logging
+                logging.warning("Error reading spatial_edges fallback: %s", err)
+                return []
+
+    def list_nodes(
+        self,
+        world_key: Optional[str] = None,
+        min_x: Optional[float] = None,
+        min_z: Optional[float] = None,
+        max_x: Optional[float] = None,
+        max_z: Optional[float] = None,
+    ):
+        """Return nodes for one world, optionally clipped to a metric viewport.
+
+        The normal path performs the clip in SQL so a large imported campus is
+        not serialized in full for every browser refresh.  The existing raw
+        fallback is retained for pre-migration databases.
+        """
+        has_viewport = all(value is not None for value in (min_x, min_z, max_x, max_z))
+        try:
+            statement = select(spatial_nodes).order_by(spatial_nodes.c.id)
+            if world_key:
+                statement = statement.where(spatial_nodes.c.world_key == world_key)
+            if has_viewport:
+                statement = statement.where(
+                    and_(
+                        spatial_nodes.c.x >= min_x,
+                        spatial_nodes.c.x <= max_x,
+                        spatial_nodes.c.z >= min_z,
+                        spatial_nodes.c.z <= max_z,
+                    )
+                )
+            all_nodes = self._execute_rows(statement)
+        except Exception:
+            # Older deployments can be missing world_key/geospatial columns.
+            # Preserve the compatible, in-memory fallback in that case.
+            all_nodes = self._fetch_all_nodes_raw()
+
+        if not world_key:
+            filtered = all_nodes
+        else:
+            filtered = [
+                n
+                for n in all_nodes
+                if n.get("world_key") == world_key
+                or _parse_properties(n.get("properties")).get("world_key") == world_key
+                or (n.get("code") and n["code"].startswith(f"{world_key}_"))
+            ]
+
+        if filtered:
+            if has_viewport:
+                return [
+                    n for n in filtered
+                    if min_x <= n.get("x", float("inf")) <= max_x
+                    and min_z <= n.get("z", float("inf")) <= max_z
+                ]
+            return filtered
+
+        if world_key == "default":
+            # Fallback for synthetic campus nodes without explicit world_key prefix
+            filtered = [
+                n
+                for n in all_nodes
+                if (n.get("world_key") in (None, "default"))
+                and not (
+                    _parse_properties(n.get("properties")).get("world_key")
+                    or (n.get("code") and "_" in n["code"] and n["code"].split("_")[0] in {"tsinghua", "tsinghua_main", "eth", "pku"})
+                )
+            ]
+            if has_viewport:
+                return [
+                    n for n in filtered
+                    if min_x <= n.get("x", float("inf")) <= max_x
+                    and min_z <= n.get("z", float("inf")) <= max_z
+                ]
+            return filtered
+        return []
+
+    def list_edges(self, node_ids: Optional[set[int]] = None):
+        all_edges = self._fetch_all_edges_raw()
+        if node_ids is not None:
+            return [
+                e
+                for e in all_edges
+                if e["from_node_id"] in node_ids and e["to_node_id"] in node_ids
+            ]
+        return all_edges
+
+    def list_worlds(self):
+        all_nodes = self._fetch_all_nodes_raw()
+        all_edges = self._fetch_all_edges_raw()
+
+        batches_by_world = {}
+        try:
+            from app.spatial.models import spatial_import_batches
+            batch_rows = self._execute_rows(select(spatial_import_batches))
+            for b in batch_rows:
+                batches_by_world[b["world_key"]] = dict(b)
+        except Exception as err:
+            import logging
+            logging.warning("Error reading spatial_import_batches: %s", err)
+
+        world_nodes: dict[str, list[dict]] = {}
+        for n in all_nodes:
+            wk = n.get("world_key")
+            if not wk or wk == "default":
+                props = _parse_properties(n.get("properties"))
+                wk = props.get("world_key")
+                if not wk and n.get("code"):
+                    parts = n["code"].split("_")
+                    if len(parts) >= 2 and parts[0] in {"tsinghua", "tsinghua_main", "eth", "pku"}:
+                        wk = parts[0]
+            if not wk:
+                wk = "default"
+            world_nodes.setdefault(wk, []).append(dict(n))
+
+        name_map = {
+            "tsinghua_main": "清华大学主校区",
+            "tsinghua": "清华大学",
+            "default": "默认示范校园",
+            "eth_zentrum": "ETH 站前校区",
+        }
+
+        worlds = []
+        for wk, nodes in world_nodes.items():
+            node_id_set = {n["id"] for n in nodes}
+            edges_count = sum(
+                1 for e in all_edges if e["from_node_id"] in node_id_set and e["to_node_id"] in node_id_set
+            )
+
+            xs = [n["x"] for n in nodes if n.get("x") is not None]
+            zs = [n["z"] for n in nodes if n.get("z") is not None]
+            lons = [n["longitude"] for n in nodes if n.get("longitude") is not None]
+            lats = [n["latitude"] for n in nodes if n.get("latitude") is not None]
+
+            batch_info = batches_by_world.get(wk, {})
+            source = batch_info.get("source") or ("OpenStreetMap contributors" if wk != "default" else "Synthetic Campus Generator")
+            license_info = batch_info.get("license") or ("ODbL 1.0" if wk != "default" else "CC0 1.0 Universal")
+
+            worlds.append(
+                {
+                    "world_key": wk,
+                    "name": name_map.get(wk, f"校园世界 ({wk})"),
+                    "node_count": len(nodes),
+                    "edge_count": edges_count,
+                    "is_real_world": wk != "default",
+                    "metric_bounds": [min(xs), min(zs), max(xs), max(zs)] if xs and zs else None,
+                    "wgs84_bounds": [min(lons), min(lats), max(lons), max(lats)] if lons and lats else None,
+                    "source": source,
+                    "license": license_info,
+                    "imported_at": str(batch_info.get("imported_at")) if batch_info.get("imported_at") else None,
+                }
+            )
+        return sorted(worlds, key=lambda w: w["world_key"])
 
     def list_occupancy(self):
         occupancy = (
@@ -93,12 +282,17 @@ class SpatialRepository:
 
     def _agent_state_statement(self):
         current = spatial_nodes.alias("current_node")
+        origin = spatial_nodes.alias("origin_node")
         target = spatial_nodes.alias("target_node")
         return (
             select(
                 agent_spatial_states,
                 current.c.code.label("current_node_code"),
                 current.c.name.label("current_node_name"),
+                current.c.longitude.label("longitude"),
+                current.c.latitude.label("latitude"),
+                origin.c.code.label("origin_node_code"),
+                origin.c.name.label("origin_node_name"),
                 target.c.code.label("target_node_code"),
                 target.c.name.label("target_node_name"),
                 agent_spatial_capabilities.c.base_speed_m_per_min,
@@ -110,6 +304,7 @@ class SpatialRepository:
                 agent_spatial_capabilities.c.version.label("capability_version"),
             )
             .join(current, current.c.id == agent_spatial_states.c.current_node_id)
+            .outerjoin(origin, origin.c.id == agent_spatial_states.c.origin_node_id)
             .outerjoin(target, target.c.id == agent_spatial_states.c.target_node_id)
             .join(
                 agent_spatial_capabilities,

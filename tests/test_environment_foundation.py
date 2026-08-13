@@ -169,7 +169,7 @@ class EnvironmentFoundationTest(unittest.TestCase):
             "backfilled_plans": 0,
             "goals_revised": 0,
         }
-        with patch.object(main, "get_connection", return_value=self.conn), patch.object(
+        with patch.dict("os.environ", {"WORLD_RUNTIME_EXTENDED_SUBSYSTEMS_ENABLED": "true"}), patch.object(main, "get_connection", return_value=self.conn), patch.object(
             main, "get_world_now", return_value=world_time
         ), patch.object(
             main, "ensure_current_action_plans", return_value=empty_plan_result
@@ -196,7 +196,7 @@ class EnvironmentFoundationTest(unittest.TestCase):
 
     def test_world_tick_failure_persists_failed_status(self):
         world_time = datetime.fromisoformat("2026-08-03T06:00:00+08:00")
-        with patch.object(main, "get_connection", return_value=self.conn), patch.object(
+        with patch.dict("os.environ", {"WORLD_RUNTIME_EXTENDED_SUBSYSTEMS_ENABLED": "true"}), patch.object(main, "get_connection", return_value=self.conn), patch.object(
             main, "get_world_now", return_value=world_time
         ), patch.object(
             main,

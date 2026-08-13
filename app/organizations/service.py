@@ -27,18 +27,20 @@ def _json(value) -> str:
     return json_dumps(value, ensure_ascii=False, sort_keys=True)
 
 
+from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
+
+
 def _parse_time(value) -> datetime:
     if isinstance(value, datetime):
-        result = value
-    else:
-        result = datetime.fromisoformat(str(value))
-    if result.tzinfo is None:
-        result = result.replace(tzinfo=timezone.utc)
-    return result
+        return value.astimezone(WORLD_TZ) if value.tzinfo else value.replace(tzinfo=WORLD_TZ)
+    parsed = parse_world_datetime(value)
+    if parsed:
+        return parsed
+    raise ValueError(f"无法解析的时间格式: {value}")
 
 
 def _now(value=None) -> datetime:
-    return _parse_time(value) if value is not None else datetime.now(timezone.utc)
+    return _parse_time(value) if value is not None else datetime.now(WORLD_TZ)
 
 
 def _organization_account(conn, organization_id: int):

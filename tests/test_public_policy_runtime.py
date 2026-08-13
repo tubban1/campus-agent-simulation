@@ -19,6 +19,7 @@ from app.public_policy.service import (
     settle_market_policy_benefits,
 )
 from app.supply.schema import SUPPLY_FOUNDATION_SQL
+from app.world_runtime.clock import WORLD_TZ
 
 
 class PublicPolicyRuntimeTest(unittest.TestCase):
@@ -61,7 +62,7 @@ class PublicPolicyRuntimeTest(unittest.TestCase):
         self.conn.executescript(BUDGET_RUNTIME_SQL)
         self.conn.executescript(MARKET_RUNTIME_SQL)
         self.conn.executescript(PUBLIC_POLICY_RUNTIME_SQL)
-        self.now = datetime(2026, 7, 29, 10, 0, tzinfo=timezone.utc)
+        self.now = datetime(2026, 7, 29, 10, 0, tzinfo=WORLD_TZ)
         self.conn.execute(
             """
             INSERT INTO catalog_items

@@ -33,3 +33,10 @@ Thumbs.db
 # Backups
 backup_*/
 backup_campus_*/
+
+# Ignored uncommitted files (2026-07-31)
+app/db/migrations/versions/20260731_0034_legacy_runtime_upsert_indexes.py
+backups/
+db_dump.sql
+schema_only.sql
+supabase_dump.sql

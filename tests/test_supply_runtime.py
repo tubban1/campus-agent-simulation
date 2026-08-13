@@ -15,6 +15,7 @@ from app.supply.service import (
     process_supply_runtime,
     seed_supply_foundation,
 )
+from app.world_runtime.clock import WORLD_TZ
 from tools.city_tools import buy_sell
 
 
@@ -60,7 +61,7 @@ class SupplyRuntimeTest(unittest.TestCase):
         seed_economy_foundation(self.conn)
         self.conn.executescript(SUPPLY_FOUNDATION_SQL)
         self.first_seed = seed_supply_foundation(self.conn)
-        self.start = datetime(2026, 7, 29, 10, 0, tzinfo=timezone.utc)
+        self.start = datetime(2026, 7, 29, 10, 0, tzinfo=WORLD_TZ)
 
     def tearDown(self):
         self.conn.close()

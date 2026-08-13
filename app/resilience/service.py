@@ -4,6 +4,7 @@ import json
 import hashlib
 from app.json_utils import json_dumps
 from datetime import datetime, timedelta, timezone
+from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
 
 
 SHOCK_SEEDS = (
@@ -35,14 +36,14 @@ def _load(value, fallback):
 
 
 def _now(value=None):
-    parsed = value or datetime.now(timezone.utc)
-    if isinstance(parsed, str):
-        parsed = datetime.fromisoformat(parsed.replace("Z", "+00:00"))
-    if not isinstance(parsed, datetime):
-        raise TypeError("时间值必须是 datetime 或 ISO 8601 字符串")
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+    if value is None:
+        return datetime.now(WORLD_TZ)
+    if isinstance(value, datetime):
+        return value.astimezone(WORLD_TZ) if value.tzinfo else value.replace(tzinfo=WORLD_TZ)
+    parsed = parse_world_datetime(value)
+    if parsed:
+        return parsed
+    raise ValueError(f"无法解析的时间格式: {value}")
 
 
 def _table_exists(conn, table_name):

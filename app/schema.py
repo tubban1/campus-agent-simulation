@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS campus_state (
     weekday TEXT NOT NULL DEFAULT '周一',
     temperature INTEGER NOT NULL DEFAULT 24,
     rainfall INTEGER NOT NULL DEFAULT 0,
+    wind_speed_10m REAL NOT NULL DEFAULT 0.0,
+    relative_humidity_2m REAL NOT NULL DEFAULT 50.0,
     weather_source TEXT NOT NULL DEFAULT 'simulation',
     weather_observed_at TEXT NOT NULL DEFAULT '',
     real_date TEXT NOT NULL DEFAULT '',
@@ -80,6 +82,8 @@ DEFAULT_ENV = {
     "weekday": "周一",
     "temperature": 24,
     "rainfall": 0,
+    "wind_speed_10m": 0.0,
+    "relative_humidity_2m": 50.0,
     "weather_source": "simulation",
     "weather_observed_at": "",
     "real_date": "",
@@ -113,6 +117,8 @@ ENV_COLUMN_TYPES = {
     "weekday": "TEXT NOT NULL DEFAULT '周一'",
     "temperature": "INTEGER NOT NULL DEFAULT 24",
     "rainfall": "INTEGER NOT NULL DEFAULT 0",
+    "wind_speed_10m": "REAL NOT NULL DEFAULT 0.0",
+    "relative_humidity_2m": "REAL NOT NULL DEFAULT 50.0",
     "weather_source": "TEXT NOT NULL DEFAULT 'simulation'",
     "weather_observed_at": "TEXT NOT NULL DEFAULT ''",
     "real_date": "TEXT NOT NULL DEFAULT ''",
@@ -895,6 +901,8 @@ CREATE TABLE IF NOT EXISTS calibration_reports (
 );
 
 CREATE INDEX IF NOT EXISTS idx_world_ticks_started_at ON world_ticks(started_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_world_ticks_single_running
+ON world_ticks(status) WHERE status = 'running';
 CREATE INDEX IF NOT EXISTS idx_world_event_stream_created_at ON world_event_stream(created_at);
 CREATE INDEX IF NOT EXISTS idx_world_event_stream_event_type ON world_event_stream(event_type);
 CREATE INDEX IF NOT EXISTS idx_world_event_stream_resident_id ON world_event_stream(resident_id);
