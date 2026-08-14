@@ -33,6 +33,14 @@ def configure(**bindings):
 def reconcile_stale_world_ticks(conn, now=None):
     """Mark abandoned running rows failed after the configured safety window."""
     now = now or get_world_now()
+    threshold = stale_world_tick_seconds()
+    runtime_started = None
+    runtime_last = conn.execute(
+        "SELECT last_tick_started_at FROM world_runtime WHERE id = ?",
+        (WORLD_RUNTIME_ID,),
+    ).fetchone()
+    if runtime_last:
+        runtime_started = parse_world_datetime(runtime_last["last_tick_started_at"])
     stale_ids = []
     rows = conn.execute(
         """
@@ -42,10 +50,13 @@ def reconcile_stale_world_ticks(conn, now=None):
         """
     ).fetchall()
     for row in rows:
+        # A running tick with an unparseable/missing timestamp must not wedge
+        # the world forever: fall back to the runtime's wall-clock marker and,
+        # if that is also unavailable, treat it as stale so it self-heals.
         started_at = parse_world_datetime(row["started_at"])
         if started_at is None:
-            continue
-        if (now - started_at).total_seconds() >= stale_world_tick_seconds():
+            started_at = runtime_started
+        if started_at is None or (now - started_at).total_seconds() >= threshold:
             stale_ids.append(int(row["id"]))
     if not stale_ids:
         return []
@@ -134,6 +145,11 @@ def _advance_world_tick_locked(reason="background"):
                         status_code=409,
                         detail="另一个服务实例正在执行世界 tick",
                     ) from exc
+            # Self-heal any abandoned running tick before refusing to start a
+            # new one, so a stale leftover cannot wedge the world across
+            # restarts regardless of which caller drives the tick.
+            reconcile_stale_world_ticks(conn)
+            conn.commit()
             existing_tick = conn.execute(
                 "SELECT id FROM world_ticks WHERE status = 'running' ORDER BY id LIMIT 1"
             ).fetchone()

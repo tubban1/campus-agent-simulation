@@ -255,6 +255,34 @@ class RuntimeSchemaSafetyTest(unittest.TestCase):
         self.assertEqual(runtime["last_tick_started_at"], "")
         conn.close()
 
+    def test_reconcile_recovers_running_tick_with_unparseable_started_at(self):
+        """A running tick with a corrupt/missing timestamp must not wedge the
+        world; it self-heals by falling back to the runtime wall-clock marker."""
+        conn = self._prepared_connection()
+        now = datetime.fromisoformat("2026-08-03T06:00:00+08:00")
+        cursor = conn.execute(
+            """
+            INSERT INTO world_ticks
+            (tick_index, world_time, day, slot, reason, status, started_at)
+            VALUES (1, ?, 1, '00:00-08:00', 'test', 'running', ?)
+            """,
+            (now.isoformat(), "not-a-real-timestamp"),
+        )
+        conn.execute(
+            "UPDATE world_runtime SET last_tick_started_at = ? WHERE id = ?",
+            ((now - timedelta(hours=1)).isoformat(), main.WORLD_RUNTIME_ID),
+        )
+
+        with patch.dict("os.environ", {"WORLD_STALE_TICK_SECONDS": "1800"}):
+            recovered = main.reconcile_stale_world_ticks(conn, now=now)
+
+        tick = conn.execute(
+            "SELECT status FROM world_ticks WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        self.assertEqual(recovered, [cursor.lastrowid])
+        self.assertEqual(tick["status"], "failed")
+        conn.close()
+
     def test_record_world_tick_failure_updates_tick_and_event(self):
         conn = self._prepared_connection()
         cursor = conn.execute(

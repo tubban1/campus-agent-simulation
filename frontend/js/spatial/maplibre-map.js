@@ -8,6 +8,54 @@ let maplibreInstance = null;
 let mapActivePopup = null;
 const agentAvatarMarkers = new Map();
 let latestAgentFeatures = [];
+const agentDisplayPositions = new Map();
+let agentAnimationRaf = null;
+
+function animateAgentPositions() {
+  if (!maplibreInstance) return;
+  let needsMoreFrames = false;
+  const alpha = 0.2;
+
+  agentDisplayPositions.forEach((pos) => {
+    const dx = pos.targetLng - pos.currentLng;
+    const dy = pos.targetLat - pos.currentLat;
+    if (Math.abs(dx) > 0.0000001 || Math.abs(dy) > 0.0000001) {
+      pos.currentLng += dx * alpha;
+      pos.currentLat += dy * alpha;
+      needsMoreFrames = true;
+    } else {
+      pos.currentLng = pos.targetLng;
+      pos.currentLat = pos.targetLat;
+    }
+  });
+
+  if (maplibreInstance.getSource('campus-agents') && latestAgentFeatures) {
+    const interpolatedFeatures = latestAgentFeatures.map(feat => {
+      const id = feat.properties.resident_id;
+      const pos = agentDisplayPositions.get(id);
+      if (!pos) return feat;
+      return {
+        ...feat,
+        geometry: {
+          ...feat.geometry,
+          coordinates: [pos.currentLng, pos.currentLat]
+        }
+      };
+    });
+
+    maplibreInstance.getSource('campus-agents').setData({
+      type: 'FeatureCollection',
+      features: interpolatedFeatures
+    });
+    syncAgentAvatarMarkers(interpolatedFeatures);
+  }
+
+  if (needsMoreFrames) {
+    agentAnimationRaf = requestAnimationFrame(animateAgentPositions);
+  } else {
+    agentAnimationRaf = null;
+  }
+}
 
 function avatarFileFor(residentId) {
   return avatarFiles[(Number(residentId || 1) - 1 + avatarFiles.length) % avatarFiles.length];
@@ -241,16 +289,19 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
       if (!maplibreInstance) return;
 
       // 0. Spatial Edges & Weather Resistance Layer
-      if (maplibreInstance.getSource('campus-edges')) {
-        maplibreInstance.getSource('campus-edges').setData({
-          type: 'FeatureCollection',
-          features: edgeFeatures
-        });
-      } else {
+      if (!maplibreInstance.getSource('campus-edges')) {
         maplibreInstance.addSource('campus-edges', {
           type: 'geojson',
           data: { type: 'FeatureCollection', features: edgeFeatures }
         });
+      } else {
+        maplibreInstance.getSource('campus-edges').setData({
+          type: 'FeatureCollection',
+          features: edgeFeatures
+        });
+      }
+
+      if (!maplibreInstance.getLayer('campus-edges-layer')) {
         maplibreInstance.addLayer({
           id: 'campus-edges-layer',
           type: 'line',
@@ -260,14 +311,18 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
             'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1.5, 18, 3.5],
             'line-opacity': 0.35
           }
-        }, 'campus-nodes-layer');
+        });
+      }
 
+      if (!maplibreInstance.getLayer('campus-edges-closed-layer')) {
         maplibreInstance.addLayer({
           id: 'campus-edges-closed-layer', type: 'line', source: 'campus-edges',
           filter: ['==', ['get', 'closed'], true],
           paint: { 'line-color': '#d84315', 'line-width': ['interpolate', ['linear'], ['zoom'], 14, 3, 18, 6], 'line-opacity': 0.9 }
-        }, 'campus-nodes-layer');
+        });
+      }
 
+      if (!maplibreInstance.getLayer('campus-edges-resistance-layer')) {
         maplibreInstance.addLayer({
           id: 'campus-edges-resistance-layer',
           type: 'line',
@@ -279,7 +334,7 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
             'line-dasharray': [2, 2],
             'line-opacity': 0.85
           }
-        }, 'campus-nodes-layer');
+        });
       }
 
       // 1. POIs and Building Nodes Layer
@@ -398,12 +453,27 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
         });
       latestAgentFeatures = agentFeatures;
 
-      if (maplibreInstance.getSource('campus-agents')) {
-        maplibreInstance.getSource('campus-agents').setData({
-          type: 'FeatureCollection',
-          features: agentFeatures
-        });
-      } else {
+      agentFeatures.forEach(feat => {
+        const id = feat.properties.resident_id;
+        const targetLng = feat.geometry.coordinates[0];
+        const targetLat = feat.geometry.coordinates[1];
+        const existing = agentDisplayPositions.get(id);
+        if (!existing) {
+          agentDisplayPositions.set(id, {
+            currentLng: targetLng, currentLat: targetLat,
+            targetLng, targetLat
+          });
+        } else {
+          existing.targetLng = targetLng;
+          existing.targetLat = targetLat;
+        }
+      });
+
+      if (!agentAnimationRaf) {
+        agentAnimationRaf = requestAnimationFrame(animateAgentPositions);
+      }
+
+      if (!maplibreInstance.getSource('campus-agents')) {
         maplibreInstance.addSource('campus-agents', {
           type: 'geojson',
           data: { type: 'FeatureCollection', features: agentFeatures }

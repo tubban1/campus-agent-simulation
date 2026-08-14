@@ -4,7 +4,7 @@
  */
 import { ApiClient } from "./api-client.js?v=20260811-profile-timeoutfix";
 import { $, colors, avatarFiles, defaultSpaces, WorldStore, escapeHtml } from "./spatial/world-store.js";
-import { initOrUpdateMapLibreMap, getMapLibreInstance } from "./spatial/maplibre-map.js?v=20260811-poiviewport1";
+import { initOrUpdateMapLibreMap, getMapLibreInstance } from "./spatial/maplibre-map.js?v=20260814-fix3-continuity";
 import {
   initThreeScene,
   resizeProfile,
@@ -859,7 +859,7 @@ function renderNewspaper() {
   if ($("paperToday")) $("paperToday").disabled = isToday;
   document.querySelectorAll("[data-paper-view]").forEach(button => button.classList.toggle("active", button.dataset.paperView === WorldStore.newspaperView));
 
-  const brief = `<section class="paper-brief"><div><span>${isToday ? "今日天气" : "归档日期"}</span><strong>${isToday ? `${env.weather || "校园天气"} ${env.temperature ?? "--"}°C` : `第 ${day} 天`}</strong></div><div><span>${isToday ? "校园人流" : "期刊状态"}</span><strong>${isToday ? `${env.campus_flow ?? "--"}/100` : "已归档"}</strong></div><div><span>${isToday ? "开放空间" : "出版逻辑"}</span><strong>${isToday ? `${openSpaces}/${spaces.length || 7}` : "每日一期"}</strong></div><div><span>分时快讯</span><strong>${WorldStore.newsPosts.length} 条</strong></div></section>`;
+  const brief = `<section class="paper-brief"><div><span>${isToday ? "今日天气" : "归档日期"}</span><strong>${isToday ? `${env.weather || "校园天气"} ${env.temperature ?? "--"}°C` : `第 ${day} 天`}</strong></div><div><span>${isToday ? "校园人流" : "期刊状态"}</span><strong>${isToday ? `${env.campus_flow ?? "--"}/100` : "已归档"}</strong></div><div><span>${isToday ? "开放空间" : "出版逻辑"}</span><strong>${isToday ? `${openSpaces}/${spaces.length}` : "每日一期"}</strong></div><div><span>分时快讯</span><strong>${WorldStore.newsPosts.length} 条</strong></div></section>`;
 
   if (WorldStore.newspaperView === "flashes") {
     $("newspaperContent").innerHTML = brief + `<section class="paper-flashes">${chronological.map(post => `<article class="paper-flash" data-agent-id="${post.resident_id}"><time>${paperTimeLabel(post)}</time><div><span class="paper-label">${articleMeta(post).section}</span><h3>${postTitle(post)}</h3><p>${newsBody(post)}</p><p class="paper-byline">线索来源：${post.name}（${post.role || "校园居民"}）</p></div></article>`).join("") || '<div class="empty">本日尚无分时快讯。runtime 会在每个已完成的 8 小时窗口后评估是否有值得发布的新发现。</div>'}</section>`;
@@ -1016,7 +1016,7 @@ function renderWorldPulse() {
   const spaces = (WorldStore.world.spaces || {}).spaces || [];
   const activeSpaces = spaces.filter(space => (space.effective_status || space.status) === "开放").length;
   const eventCount = (WorldStore.world.events || []).length;
-  pulse.innerHTML = [["活跃居民", WorldStore.agents.length, "正在自主生活"], ["开放空间", `${activeSpaces}/${spaces.length || 7}`, "校园可达区域"], ["今日事件", eventCount, "环境与行动记录"], ["世界温度", `${e.temperature ?? "--"}°C`, e.weather || "模拟环境"]].map(([label, value, note]) => `<div class="pulse-item"><span class="pulse-label"><i></i>${label}</span><strong class="pulse-value">${value}</strong><span class="pulse-note">${note}</span></div>`).join("");
+  pulse.innerHTML = [["活跃居民", WorldStore.agents.length, "正在自主生活"], ["开放空间", `${activeSpaces}/${spaces.length}`, "校园可达区域"], ["今日事件", eventCount, "环境与行动记录"], ["世界温度", `${e.temperature ?? "--"}°C`, e.weather || "模拟环境"]].map(([label, value, note]) => `<div class="pulse-item"><span class="pulse-label"><i></i>${label}</span><strong class="pulse-value">${value}</strong><span class="pulse-note">${note}</span></div>`).join("");
 }
 
 function currentWorldClock() {

@@ -153,6 +153,24 @@ def evaluate_world_action_preconditions(conn, resident_id, action_type, location
                         world_time=world_time,
                     )
                     market_allowed = market_choice["status"] == "accepted"
+                    if not market_allowed and market_choice.get("substitute"):
+                        sub = market_choice["substitute"]
+                        sub_choice = evaluate_market_choice(
+                            conn,
+                            resident_id=resident_id,
+                            mechanism_id=int(sub["mechanism_id"]),
+                            action_type=action_type,
+                            world_time=world_time,
+                        )
+                        if sub_choice["status"] == "accepted":
+                            sub_choice["fallback_from_item"] = market_choice["item_name"]
+                            sub_choice["reason"] = (
+                                f"原报价 {market_choice['item_name']} 超过意愿/受限，"
+                                f"同 tick 无缝降级选择替代品 {sub_choice['item_name']}"
+                            )
+                            market_choice = sub_choice
+                            market_allowed = True
+
                     add_check(
                         "market_offer",
                         market_allowed,
@@ -163,7 +181,7 @@ def evaluate_world_action_preconditions(conn, resident_id, action_type, location
                             market_choice["reason"]
                             + (
                                 f"，可替代为{market_choice['substitute']['item_name']}"
-                                if market_choice.get("substitute")
+                                if not market_allowed and market_choice.get("substitute")
                                 else ""
                             )
                         ),

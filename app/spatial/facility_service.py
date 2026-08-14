@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import insert, select
 
+from app.db import db_savepoint
 from app.spatial.models import spatial_nodes, spatial_resources
 
 
@@ -197,15 +198,64 @@ def _open_work_order(conn, *, resource_id, order_type, day, units, cost_minor):
     return int(getattr(cursor, "lastrowid", 0) or 0), True
 
 
+_FACILITY_SUPPLY_ITEM = {
+    "meal_stock": "套餐饭",
+}
+
+
+def _try_supply_restock(conn, row, worker_id, day) -> bool:
+    """Fill a facility shelf from an auditable procurement purchase.
+
+    Falls back to ``False`` (caller keeps legacy behaviour) whenever the supply
+    subsystem, a mapped catalog item, or buyer funds are unavailable.
+    """
+    resource_key = str(_value(row, "resource_key") or "")
+    item_name = _FACILITY_SUPPLY_ITEM.get(resource_key)
+    if not item_name:
+        return False
+    try:
+        from app.supply.procurement import procure_item
+
+        result = procure_item(
+            conn,
+            item_name=item_name,
+            quantity=int(_value(row, "requested_units") or 0),
+            buyer_actor_key=f"resident:{int(worker_id)}",
+            location=str(_value(row, "node_name") or ""),
+        )
+    except Exception:
+        return False
+    if not result["fulfilled"]:
+        return False
+    qty = int(result["quantity"])
+    inventory = min(
+        int(_value(row, "inventory_capacity") or 0),
+        int(_value(row, "inventory_units") or 0) + qty,
+    )
+    _execute(
+        conn,
+        "UPDATE spatial_facility_states SET inventory_units = ?, last_replenished_day = ? WHERE resource_id = ?",
+        (inventory, day, _value(row, "resource_id")),
+    )
+    _execute(
+        conn,
+        "UPDATE spatial_resources SET available_units = ?, status = 'available' WHERE id = ?",
+        (inventory, _value(row, "resource_id")),
+    )
+    return True
+
+
 def _complete_colocated_work_orders(conn, *, day):
     """Complete only work for which an eligible Agent is physically present."""
     rows = _execute(conn, """
         SELECT o.id, o.resource_id, o.order_type, o.requested_units, o.cost_minor,
-               r.node_id, r.capacity, f.inventory_units, f.inventory_capacity, f.condition,
+               r.node_id, r.resource_key, n.name AS node_name,
+               r.capacity, f.inventory_units, f.inventory_capacity, f.condition,
                worker.id AS worker_id, worker.money
         FROM spatial_facility_work_orders o
         JOIN spatial_resources r ON r.id = o.resource_id
         JOIN spatial_facility_states f ON f.resource_id = r.id
+        JOIN spatial_nodes n ON n.id = r.node_id
         JOIN agent_spatial_states state ON state.current_node_id = r.node_id
           AND state.movement_status IN ('idle', 'arrived')
         JOIN residents worker ON worker.id = state.resident_id
@@ -227,9 +277,11 @@ def _complete_colocated_work_orders(conn, *, day):
         if cost:
             _execute(conn, "UPDATE residents SET money = money - ? WHERE id = ?", ((cost + 99) // 100, _value(row, "worker_id")))
         if _value(row, "order_type") == "restock":
-            inventory = min(int(_value(row, "inventory_capacity") or 0), int(_value(row, "inventory_units") or 0) + int(_value(row, "requested_units") or 0))
-            _execute(conn, "UPDATE spatial_facility_states SET inventory_units = ?, last_replenished_day = ? WHERE resource_id = ?", (inventory, day, _value(row, "resource_id")))
-            _execute(conn, "UPDATE spatial_resources SET available_units = ?, status = 'available' WHERE id = ?", (inventory, _value(row, "resource_id")))
+            # Supply chain is the only way a shelf is refilled.  A work order
+            # that cannot yet be fulfilled stays open (a genuine shortage);
+            # inventory is never fabricated from nothing.
+            if not _try_supply_restock(conn, row, _value(row, "worker_id"), day):
+                continue
             kind = "restocked"
         else:
             _execute(conn, "UPDATE spatial_facility_states SET condition = 70, maintenance_status = 'operational' WHERE resource_id = ?", (_value(row, "resource_id"),))
@@ -295,19 +347,14 @@ def advance_facility_lifecycle(conn, *, day: int, hour: int) -> dict:
     opens.  A depleted or worn facility is unavailable until the overnight
     maintenance window repairs it.  This never creates resources: only OSM
     imported facilities that already declared a resource participate.
+
+    The whole body runs inside a savepoint so a failure (for example a schema
+    still catching up, or a best-effort supply lookup) can never leave the
+    enclosing world-tick transaction aborted in PostgreSQL.
     """
     try:
-        rows = _execute(conn, """
-        SELECT n.id AS node_id, n.name AS node_name, r.id AS resource_id,
-               r.resource_key, r.capacity, r.available_units,
-               f.open_hour, f.close_hour, f.condition, f.maintenance_status,
-               f.inventory_units, f.inventory_capacity, f.last_replenished_day,
-               (SELECT COUNT(*) FROM spatial_admission_queue q
-                 WHERE q.node_id = n.id AND q.status IN ('waiting', 'queued')) AS queue_length
-        FROM spatial_resources r
-        JOIN spatial_nodes n ON n.id = r.node_id
-        JOIN spatial_facility_states f ON f.resource_id = r.id
-        """).fetchall()
+        with db_savepoint(conn, "facility_lifecycle"):
+            return _advance_facility_lifecycle_body(conn, day=day)
     except Exception as exc:
         # A deliberately topology-free test world has no facility subsystem
         # to advance.  Do not turn that fact into a tick failure; production
@@ -318,6 +365,20 @@ def advance_facility_lifecycle(conn, *, day: int, hour: int) -> dict:
                 "events": [], "skipped": True, "reason": "no_spatial_facilities",
             }
         raise
+
+
+def _advance_facility_lifecycle_body(conn, *, day: int) -> dict:
+    rows = _execute(conn, """
+        SELECT n.id AS node_id, n.name AS node_name, r.id AS resource_id,
+               r.resource_key, r.capacity, r.available_units,
+               f.open_hour, f.close_hour, f.condition, f.maintenance_status,
+               f.inventory_units, f.inventory_capacity, f.last_replenished_day,
+               (SELECT COUNT(*) FROM spatial_admission_queue q
+                 WHERE q.node_id = n.id AND q.status IN ('waiting', 'queued')) AS queue_length
+        FROM spatial_resources r
+        JOIN spatial_nodes n ON n.id = r.node_id
+        JOIN spatial_facility_states f ON f.resource_id = r.id
+        """).fetchall()
     restocked = repaired = closed_for_maintenance = work_orders_created = 0
     events = []
     completed_orders, completed_events = _complete_colocated_work_orders(conn, day=day)

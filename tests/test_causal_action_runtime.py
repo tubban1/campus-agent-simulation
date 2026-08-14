@@ -636,6 +636,87 @@ class CausalActionRuntimeTest(unittest.TestCase):
         self.assertEqual(location, "食堂")
         self.assertEqual(execution_count, 0)
 
+    def test_intra_tick_fallback_seamlessly_accepts_substitute_item(self):
+        self.conn.execute(
+            """
+            INSERT INTO residents
+            (id, name, role, personality, goal, money, location)
+            VALUES (5, '食堂经营者', '食堂商家', '稳定', '保障餐食', 100, '食堂')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO residents
+            (id, name, role, personality, goal, money, location)
+            VALUES (6, '饮品经营者', '奶茶店商家', '稳定', '保障饮品', 100, '商业街')
+            """
+        )
+        seed_economy_foundation(self.conn)
+        self.conn.executescript(SUPPLY_FOUNDATION_SQL)
+        seed_supply_foundation(self.conn)
+        meal = self.conn.execute(
+            "SELECT id FROM catalog_items WHERE name = '套餐饭'"
+        ).fetchone()
+        breakfast = self.conn.execute(
+            "SELECT id FROM catalog_items WHERE name = '早餐券'"
+        ).fetchone()
+        from app.supply.service import _ensure_inventory_account
+        _ensure_inventory_account(
+            self.conn, owner_actor_key="resident:5", item_id=meal["id"], location="食堂", target_stock=10
+        )
+        _ensure_inventory_account(
+            self.conn, owner_actor_key="resident:5", item_id=breakfast["id"], location="食堂", target_stock=10
+        )
+        self.conn.execute("UPDATE inventory_accounts SET quantity_on_hand = 10")
+        self.conn.execute(
+            """
+            CREATE TABLE agent_body_states (
+                resident_id INTEGER PRIMARY KEY,
+                hunger REAL NOT NULL,
+                fatigue REAL NOT NULL,
+                sleep_debt REAL NOT NULL,
+                stress REAL NOT NULL,
+                attention REAL NOT NULL,
+                social_energy REAL NOT NULL,
+                health REAL NOT NULL,
+                weather_exposure REAL NOT NULL,
+                last_updated_at TEXT,
+                last_updated_tick INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'test',
+                version INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO agent_body_states
+            (resident_id, hunger, fatigue, sleep_debt, stress, attention,
+             social_energy, health, weather_exposure)
+            VALUES (1, 70, 30, 20, 20, 60, 60, 80, 0)
+            """
+        )
+        from app.market.schema import MARKET_RUNTIME_SQL
+        from app.market.service import seed_market_runtime
+        self.conn.executescript(MARKET_RUNTIME_SQL)
+        seed_market_runtime(self.conn)
+        self.conn.execute(
+            "UPDATE market_mechanisms SET base_price_minor = 15000, floor_price_minor = 15000, ceiling_price_minor = 20000 WHERE item_id = ?",
+            (meal["id"],),
+        )
+
+        action = main.begin_world_action_execution(
+            self.conn, 1, "consume", "食堂", self.world_time, tick_id=20
+        )
+
+        self.assertEqual(action["status"], "pending")
+        market_check = next(p for p in action["preconditions"] if p["key"] == "market_offer")
+        market_choice = market_check["actual"]
+        self.assertIsNotNone(market_choice)
+        self.assertEqual(market_choice["item_name"], "早餐券")
+        self.assertEqual(market_choice["fallback_from_item"], "套餐饭")
+        self.assertIn("同 tick 无缝降级", market_choice["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

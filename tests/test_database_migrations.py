@@ -18,6 +18,7 @@ from app.db.migration_runtime import (
     get_current_revision,
     get_head_revision,
     list_business_tables,
+    migrate_pending_to_head,
 )
 from scripts.migrate_db import migrate_database
 
@@ -254,6 +255,76 @@ class DatabaseMigrationFoundationTest(unittest.TestCase):
                     RuntimeError, "missing required baseline tables"
                 ):
                     migrate_database()
+
+
+    def test_migrate_pending_to_head_applies_missing_runtime_table(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "campus.db"
+            self.create_required_baseline_tables(db_path)
+            with patch.dict(
+                os.environ,
+                {"DATABASE_URL": "", "DB_PATH": str(db_path)},
+                clear=False,
+            ):
+                engine = create_database_engine()
+                config = get_alembic_config()
+                try:
+                    command.stamp(config, BASELINE_REVISION)
+                    # Stop one revision before the spatial_edge_physical_states
+                    # table so the pending helper has real work to do.
+                    command.upgrade(config, "20260813_0045")
+                    self.assertNotIn(
+                        "spatial_edge_physical_states", list_business_tables(engine)
+                    )
+
+                    result = migrate_pending_to_head()
+
+                    self.assertTrue(result["applied"])
+                    self.assertEqual(result["from_revision"], "20260813_0045")
+                    self.assertIn(
+                        "spatial_edge_physical_states", list_business_tables(engine)
+                    )
+                    self.assertEqual(
+                        get_current_revision(engine), get_head_revision(config)
+                    )
+                finally:
+                    engine.dispose()
+
+    def test_migrate_pending_to_head_is_idempotent_at_head(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "campus.db"
+            self.create_required_baseline_tables(db_path)
+            with patch.dict(
+                os.environ,
+                {"DATABASE_URL": "", "DB_PATH": str(db_path)},
+                clear=False,
+            ):
+                engine = create_database_engine()
+                config = get_alembic_config()
+                try:
+                    command.stamp(config, BASELINE_REVISION)
+                    command.upgrade(config, "head")
+
+                    result = migrate_pending_to_head()
+
+                    self.assertEqual(result["applied"], False)
+                    self.assertEqual(result["reason"], "already_at_head")
+                finally:
+                    engine.dispose()
+
+    def test_migrate_pending_to_head_skips_unversioned_schema(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "campus.db"
+            self.create_required_baseline_tables(db_path)
+            with patch.dict(
+                os.environ,
+                {"DATABASE_URL": "", "DB_PATH": str(db_path)},
+                clear=False,
+            ):
+                result = migrate_pending_to_head()
+
+                self.assertEqual(result["applied"], False)
+                self.assertEqual(result["reason"], "unversioned_schema")
 
 
 if __name__ == "__main__":

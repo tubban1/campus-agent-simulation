@@ -226,7 +226,6 @@ class SpatialAffordanceRuntimeTest(unittest.TestCase):
                    WHERE r.node_id = 11 AND r.resource_key = 'meal_stock'"""
             ).fetchone()
             self.assertGreater(second["work_orders_completed"], 0)
-            self.assertEqual(state["inventory_units"], state["inventory_capacity"])
             repaired = conn.execute(
                 """SELECT condition, maintenance_status FROM spatial_facility_states f
                    JOIN spatial_resources r ON r.id = f.resource_id
@@ -234,6 +233,15 @@ class SpatialAffordanceRuntimeTest(unittest.TestCase):
             ).fetchone()
             self.assertEqual(repaired["maintenance_status"], "operational")
             self.assertGreaterEqual(repaired["condition"], 20)
+            # Restock is supply-chain only: without a configured supplier the
+            # work order stays open as a genuine shortage and the shelf is
+            # never fabricated from nothing.
+            self.assertEqual(state["inventory_units"], 0)
+            restock_open = conn.execute(
+                """SELECT COUNT(*) AS c FROM spatial_facility_work_orders
+                   WHERE order_type = 'restock' AND status IN ('open', 'assigned')"""
+            ).fetchone()["c"]
+            self.assertGreater(restock_open, 0)
         finally:
             conn.close()
 

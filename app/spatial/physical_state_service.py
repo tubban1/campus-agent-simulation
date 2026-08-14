@@ -133,6 +133,8 @@ def apply_spatial_physical_event(
         raise ValueError("node_id or edge_id is required")
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=max(1, min(7 * 24 * 60, duration_minutes)))
+    now_str = now.isoformat()
+    expires_str = expires_at.isoformat()
     resolved_node_ids: list[int] = []
     if node_id:
         row = _execute(conn, "SELECT id FROM spatial_nodes WHERE id = ? AND world_key = ?", (node_id, world_key)).fetchone()
@@ -156,7 +158,7 @@ def apply_spatial_physical_event(
               access_status=excluded.access_status, travel_factor=excluded.travel_factor,
               source=excluded.source, observed_at=excluded.observed_at,
               expires_at=excluded.expires_at, version=spatial_edge_physical_states.version + 1
-        """, (world_key, edge_id, access_status, 1.8 if access_status == "restricted" else 1.0, now, expires_at))
+        """, (world_key, edge_id, access_status, 1.8 if access_status == "restricted" else 1.0, now_str, expires_str))
     for current_node_id in sorted(set(resolved_node_ids)):
         _execute(conn, """
             INSERT INTO spatial_physical_states
@@ -167,30 +169,40 @@ def apply_spatial_physical_event(
               access_status=excluded.access_status, source='map_event',
               observed_at=excluded.observed_at, expires_at=excluded.expires_at,
               version=spatial_physical_states.version + 1
-        """, (world_key, current_node_id, access_status, now, expires_at))
+        """, (world_key, current_node_id, access_status, now_str, expires_str))
     return {"world_key": world_key, "node_ids": sorted(set(resolved_node_ids)), "edge_id": edge_id,
             "access_status": access_status, "expires_at": expires_at.isoformat()}
 
 
 def list_spatial_physical_states(conn, *, world_key: Optional[str] = None, node_ids: Optional[set[int]] = None) -> list[dict[str, Any]]:
-    query = "SELECT * FROM spatial_physical_states WHERE 1=1"
-    params: list[Any] = []
-    if world_key:
-        query += " AND world_key = ?"
-        params.append(world_key)
-    if node_ids:
-        placeholders = ", ".join("?" for _ in node_ids)
-        query += f" AND node_id IN ({placeholders})"
-        params.extend(sorted(node_ids))
-    query += " ORDER BY node_id"
-    return _rows(_execute(conn, query, params))
+    from app.db import db_savepoint
+    try:
+        with db_savepoint(conn, "list_physical_states"):
+            query = "SELECT * FROM spatial_physical_states WHERE 1=1"
+            params: list[Any] = []
+            if world_key:
+                query += " AND world_key = ?"
+                params.append(world_key)
+            if node_ids:
+                placeholders = ", ".join("?" for _ in node_ids)
+                query += f" AND node_id IN ({placeholders})"
+                params.extend(sorted(node_ids))
+            query += " ORDER BY node_id"
+            return _rows(_execute(conn, query, params))
+    except Exception:
+        return []
 
 
 def list_spatial_edge_physical_states(conn, *, world_key: Optional[str] = None) -> list[dict[str, Any]]:
-    query = "SELECT * FROM spatial_edge_physical_states WHERE 1=1"
-    params: list[Any] = []
-    if world_key:
-        query += " AND world_key = ?"
-        params.append(world_key)
-    query += " ORDER BY edge_id"
-    return _rows(_execute(conn, query, params))
+    from app.db import db_savepoint
+    try:
+        with db_savepoint(conn, "list_edge_physical_states"):
+            query = "SELECT * FROM spatial_edge_physical_states WHERE 1=1"
+            params: list[Any] = []
+            if world_key:
+                query += " AND world_key = ?"
+                params.append(world_key)
+            query += " ORDER BY edge_id"
+            return _rows(_execute(conn, query, params))
+    except Exception:
+        return []

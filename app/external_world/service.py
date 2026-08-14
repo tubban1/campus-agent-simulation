@@ -9,6 +9,7 @@ from app.world_runtime.clock import parse_world_datetime, WORLD_TZ
 from html import unescape
 from urllib.parse import urlparse
 
+from app.db import db_savepoint
 from app.resilience.service import (
     create_shock,
     process_resilience_runtime,
@@ -81,21 +82,22 @@ SOURCE_SEEDS = (
     ),
     (
         "google-news-public",
-        "Google News 公共资讯",
+        "Google News / 百度新闻 RSS",
         "rss",
         "https://news.google.com",
         "fixed-rss-v1",
         0.6,
         ["news.public_event_reported"],
-        7200,
+        1800,
         21600,
         "simulation",
         {
-            "feed_url": (
-                "https://news.google.com/rss/search?"
-                "q=(AI%20OR%20%E5%A4%A7%E5%AD%A6%20OR%20%E6%95%99%E8%82%B2"
-                "%20OR%20%E5%B0%B1%E4%B8%9A)&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-            ),
+            "feed_url": "https://36kr.com/feed",
+            "fallback_urls": [
+                "https://www.bing.com/news/search?q=(AI%20OR%20university%20OR%20education)&format=rss&setlang=zh-CN&cc=CN",
+                "https://www.ithome.com/rss/",
+                "https://news.google.com/rss/search?q=(AI%20OR%20%E5%A4%A7%E5%AD%A6%20OR%20%E6%95%99%E8%82%B2)&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+            ],
             "limit": 5,
         },
     ),
@@ -201,7 +203,29 @@ def register_source(
         "SELECT * FROM external_sources WHERE source_key = ?", (source_key,)
     ).fetchone()
     if existing:
-        return dict(existing)
+        conn.execute(
+            """
+            UPDATE external_sources
+            SET poll_interval_seconds = ?, config_json = ?, adapter_key = ?,
+                base_url = ?, stale_after_seconds = ?, trust_prior = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE source_key = ?
+            """,
+            (
+                int(poll_interval_seconds),
+                _json(config or {}),
+                adapter_key,
+                base_url,
+                int(stale_after_seconds),
+                float(trust_prior),
+                source_key,
+            ),
+        )
+        return dict(
+            conn.execute(
+                "SELECT * FROM external_sources WHERE source_key = ?", (source_key,)
+            ).fetchone()
+        )
     cursor = conn.execute(
         """
         INSERT INTO external_sources
@@ -1793,7 +1817,8 @@ def maybe_sync_due_sources(conn, now=None):
             except Exception:
                 pass
         try:
-            res = sync_registered_source(conn, source_id, now=now)
+            with db_savepoint(conn, "external_sync"):
+                res = sync_registered_source(conn, source_id, now=now)
             sync_results.append({
                 "source_id": source_id,
                 "source_key": source_key,

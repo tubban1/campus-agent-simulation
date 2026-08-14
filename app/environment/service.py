@@ -156,9 +156,20 @@ def apply_campus_event_effects(conn, day, effects, *, default_environment, campu
     updates = {key: value for key, value in updates.items() if key in default_environment}
     if not updates:
         return {}
-    campus_environment(conn, day)
-    repository.update_campus_state(conn, day, updates)
-    return updates
+    current = campus_environment(conn, day)
+    smoothed_updates = {}
+    alpha = 0.65  # EWMA smoothing factor for environmental continuity
+    for key, target_val in updates.items():
+        if key in current and isinstance(current[key], (int, float)) and isinstance(target_val, (int, float)):
+            smoothed = alpha * float(target_val) + (1.0 - alpha) * float(current[key])
+            if isinstance(target_val, float) or isinstance(current[key], float):
+                smoothed_updates[key] = round(smoothed, 2)
+            else:
+                smoothed_updates[key] = max(0, min(100, round(smoothed)))
+        else:
+            smoothed_updates[key] = target_val
+    repository.update_campus_state(conn, day, smoothed_updates)
+    return smoothed_updates
 
 
 def create_campus_event(conn, day, title, event_type, intensity, target_spaces=None, effects=None, *,

@@ -13,6 +13,8 @@ from app.adaptation.service import (
 )
 from app.spatial.planner import RouteNotFoundError, edge_travel_minutes, plan_route
 
+from app.db import db_savepoint
+
 
 ACTIVE_MOVEMENT_STATUSES = {"moving", "replanning", "waiting"}
 
@@ -77,13 +79,19 @@ def _load_nodes(conn):
 def _load_edges(conn):
     dynamic = {}
     try:
-        now = datetime.now(timezone.utc)
-        query = """SELECT edge_id, access_status, travel_factor FROM spatial_edge_physical_states
-                   WHERE expires_at IS NULL OR expires_at > ?"""
-        result = conn.exec_driver_sql(query, (now,)) if hasattr(conn, "exec_driver_sql") else conn.execute(query, (now,))
-        for raw in result.fetchall():
-            row = dict(raw._mapping) if hasattr(raw, "_mapping") else dict(raw)
-            dynamic[int(row["edge_id"])] = row
+        # The physical-state table is optional; isolated topology tests
+        # deliberately omit it.  Run inside a savepoint so a missing table
+        # (UndefinedTable) rolls back only this probe instead of poisoning the
+        # surrounding tick transaction -- otherwise every later statement in
+        # the tick raises InFailedSqlTransaction.
+        with db_savepoint(conn, "edge_physical_states"):
+            now_str = datetime.now(timezone.utc).isoformat()
+            query = """SELECT edge_id, access_status, travel_factor FROM spatial_edge_physical_states
+                       WHERE expires_at IS NULL OR expires_at > ?"""
+            result = conn.exec_driver_sql(query, (now_str,)) if hasattr(conn, "exec_driver_sql") else conn.execute(query, (now_str,))
+            for raw in result.fetchall():
+                row = dict(raw._mapping) if hasattr(raw, "_mapping") else dict(raw)
+                dynamic[int(row["edge_id"])] = row
     except Exception:
         # Schema readiness prevents this in production; isolated topology
         # tests deliberately omit optional physical-state tables.

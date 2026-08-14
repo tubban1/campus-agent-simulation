@@ -3,6 +3,53 @@
 import os
 import logging
 
+from app.db import db_savepoint
+
+
+
+def _refresh_physical_states_best_effort(
+    conn, *, world_time, environment, movement_results, facility_updates
+) -> None:
+    """Refresh physical states inside a savepoint so a failure cannot abort
+    the tick transaction.  This is best-effort: if it fails we roll back only
+    the savepoint and keep the surrounding tick transaction usable."""
+    from app.spatial.physical_state_service import refresh_spatial_physical_states
+
+    touched = [item.get("current_node_id") for item in movement_results if item.get("current_node_id")]
+    touched.extend(item.get("node_id") for item in facility_updates["events"] if item.get("node_id"))
+    try:
+        with db_savepoint(conn, "physical_state_refresh"):
+            for world in conn.execute("SELECT DISTINCT world_key FROM spatial_nodes").fetchall():
+                refresh_spatial_physical_states(
+                    conn,
+                    world_key=world["world_key"],
+                    environment=environment,
+                    observed_at=world_time.isoformat(),
+                    node_ids=touched,
+                )
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Unable to refresh moved-node physical states: %s", exc
+        )
+
+
+def _process_night_dreams_best_effort(
+    conn, *, world_time, day, process_night_dreams
+) -> dict:
+    """Run night dreams inside a savepoint so a failure cannot abort the tick
+    transaction.  Dreams are optional ambience and must never hold the world
+    tick hostage (see dream_runtime)."""
+    if not process_night_dreams:
+        return {"skipped": True, "reason": "not_configured"}
+    try:
+        with db_savepoint(conn, "night_dreams"):
+            return process_night_dreams(conn, world_time, day=day)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Night dream subsystem failed: %s", exc
+        )
+        return {"skipped": True, "reason": "dream_subsystem_error"}
+
 
 def start_world_tick(
     conn,
@@ -226,7 +273,7 @@ def run_pre_agent_subsystems(
         )
         supply_updates = process_supply_runtime(conn, world_time)
         body_states = advance_body_states(conn, world_time, tick_index, environment)
-        night_dreams = process_night_dreams(conn, world_time, day=day) if process_night_dreams else {"skipped": True, "reason": "not_configured"}
+        night_dreams = _process_night_dreams_best_effort(conn, world_time=world_time, day=day, process_night_dreams=process_night_dreams)
         movement_results = advance_active_movements(conn, world_time, tick_index)
         movement_events = record_movement_events(
             movement_results,
@@ -239,21 +286,13 @@ def run_pre_agent_subsystems(
         # Movement changes local crowding immediately.  Refresh only touched
         # nodes here; the full-world weather refresh stays out of the tick hot
         # path for the imported 13k-node campus.
-        try:
-            from app.spatial.physical_state_service import refresh_spatial_physical_states
-            touched = [item.get("current_node_id") for item in movement_results if item.get("current_node_id")]
-            touched.extend(item.get("node_id") for item in facility_updates["events"] if item.get("node_id"))
-            worlds = conn.execute("SELECT DISTINCT world_key FROM spatial_nodes").fetchall()
-            for world in worlds:
-                refresh_spatial_physical_states(
-                    conn,
-                    world_key=world["world_key"],
-                    environment=environment,
-                    observed_at=world_time.isoformat(),
-                    node_ids=touched,
-                )
-        except Exception as exc:
-            logging.getLogger(__name__).warning("Unable to refresh moved-node physical states: %s", exc)
+        _refresh_physical_states_best_effort(
+            conn,
+            world_time=world_time,
+            environment=environment,
+            movement_results=movement_results,
+            facility_updates=facility_updates,
+        )
         conn.commit()
         skipped = {"skipped": True, "reason": "disabled_in_core_tick"}
         return {
@@ -361,7 +400,7 @@ def run_pre_agent_subsystems(
         branch_key=active_branch_key(),
     )
     body_states = advance_body_states(conn, world_time, tick_index, environment)
-    night_dreams = process_night_dreams(conn, world_time, day=day) if process_night_dreams else {"skipped": True, "reason": "not_configured"}
+    night_dreams = _process_night_dreams_best_effort(conn, world_time=world_time, day=day, process_night_dreams=process_night_dreams)
     movement_results = advance_active_movements(conn, world_time, tick_index)
     movement_events = record_movement_events(
         movement_results,
@@ -371,20 +410,13 @@ def run_pre_agent_subsystems(
         slot=slot,
         parent_event_id=start_event["id"],
     )
-    try:
-        from app.spatial.physical_state_service import refresh_spatial_physical_states
-        touched = [item.get("current_node_id") for item in movement_results if item.get("current_node_id")]
-        touched.extend(item.get("node_id") for item in facility_updates["events"] if item.get("node_id"))
-        for world in conn.execute("SELECT DISTINCT world_key FROM spatial_nodes").fetchall():
-            refresh_spatial_physical_states(
-                conn,
-                world_key=world["world_key"],
-                environment=environment,
-                observed_at=world_time.isoformat(),
-                node_ids=touched,
-            )
-    except Exception as exc:
-        logging.getLogger(__name__).warning("Unable to refresh moved-node physical states: %s", exc)
+    _refresh_physical_states_best_effort(
+        conn,
+        world_time=world_time,
+        environment=environment,
+        movement_results=movement_results,
+        facility_updates=facility_updates,
+    )
     multiscale_updates = run_due_world_updates(
         conn,
         world_time,

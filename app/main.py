@@ -30,6 +30,7 @@ from app.db.migration_runtime import (
     get_current_revision,
     get_head_revision,
     list_business_tables,
+    migrate_pending_to_head,
 )
 from app.economy.router import router as economy_router
 from app.economy.service import post_money_transfer
@@ -260,7 +261,28 @@ from tools.city_tools import (
 
 @asynccontextmanager
 async def app_lifespan(_app):
-    """Own the optional world writer for this ASGI process lifetime."""
+    """Own the optional world writer for this ASGI process lifetime.
+
+    On PostgreSQL, bring the schema up to the current migration head before
+    serving requests so a deployment that lags its migrations heals on restart
+    instead of failing at runtime with missing tables.
+    """
+    if using_postgres():
+        try:
+            result = migrate_pending_to_head()
+            if result.get("applied"):
+                logger.info(
+                    "Applied pending schema migrations %s -> %s",
+                    result.get("from_revision"),
+                    result.get("to_revision"),
+                )
+            elif result.get("reason") == "unversioned_schema":
+                logger.warning(
+                    "Database schema is unversioned; run scripts/deploy_database.py "
+                    "to bootstrap before serving."
+                )
+        except Exception:
+            logger.exception("Startup schema migration failed; serving with current schema")
     start_world_runner_thread()
     try:
         yield
@@ -327,8 +349,8 @@ WORLD_SCHEMA_READY = False
 WORLD_RUNTIME_ID = 1
 WORLD_TICK_ADVISORY_LOCK_ID = 7_436_177_031
 DEFAULT_WORLD_STALE_TICK_SECONDS = 90
-WORLD_EXTERNAL_SYNC_INTERVAL_SECONDS = 3600
-WORLD_WEATHER_SYNC_INTERVAL_SECONDS = 3600
+WORLD_EXTERNAL_SYNC_INTERVAL_SECONDS = 900
+WORLD_WEATHER_SYNC_INTERVAL_SECONDS = 1800
 WORLD_CAMPUS_NEWS_WINDOW_SECONDS = 8 * 3600
 OBSERVER_MODEL_DETAIL_COOLDOWN_SECONDS = 300
 WORLD_AUTONOMOUS_ACTIONS = {
@@ -3541,12 +3563,20 @@ def ai_newspaper_today():
 
 EXTERNAL_RSS_SOURCES = [
     (
-        "Google News RSS",
-        "https://news.google.com/rss/search?q=(AI%20OR%20%E5%A4%A7%E5%AD%A6%20OR%20%E6%95%99%E8%82%B2%20OR%20%E5%B0%B1%E4%B8%9A)&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+        "36Kr RSS",
+        "https://36kr.com/feed",
     ),
     (
         "Bing News RSS",
         "https://www.bing.com/news/search?q=(AI%20OR%20university%20OR%20education%20OR%20employment)&format=rss&setlang=zh-CN&cc=CN",
+    ),
+    (
+        "ITHome RSS",
+        "https://www.ithome.com/rss/",
+    ),
+    (
+        "Google News RSS",
+        "https://news.google.com/rss/search?q=(AI%20OR%20%E5%A4%A7%E5%AD%A6%20OR%20%E6%95%99%E8%82%B2%20OR%20%E5%B0%B1%E4%B8%9A)&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
     ),
 ]
 

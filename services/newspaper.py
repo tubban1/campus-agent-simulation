@@ -4,6 +4,8 @@ from contextlib import contextmanager
 import os
 import threading
 
+from app.db import db_savepoint
+
 _MODULE_NAME = __name__
 
 
@@ -517,7 +519,8 @@ def maybe_auto_sync_real_weather(conn, world_time, tick_id=None, day=None, slot=
     if latest_at and (world_time - latest_at).total_seconds() < WORLD_WEATHER_SYNC_INTERVAL_SECONDS:
         return {"skipped": True, "reason": "interval_not_elapsed", "last_synced_at": latest_at.isoformat()}
     try:
-        result = sync_real_weather_into_world(conn, event_type="real_weather_auto_sync", tick_id=tick_id, day=day, slot=slot, world_time=world_time)
+        with db_savepoint(conn, "weather_auto_sync"):
+            result = sync_real_weather_into_world(conn, event_type="real_weather_auto_sync", tick_id=tick_id, day=day, slot=slot, world_time=world_time)
         env = result["environment"]
         return {
             "skipped": False,

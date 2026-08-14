@@ -305,7 +305,23 @@ def evaluate_action_choice(
             (resident_id,),
         ).fetchone()
         hunger = int(body["hunger"]) if body else 0
-    essential_emergency = action_type == "consume" and hunger >= 85
+    is_basic_dining = (
+        action_type == "consume"
+        and (
+            hunger >= 85
+            or (
+                int(required_money_minor) <= 1500
+                and (
+                    hunger >= 35
+                    or any(
+                        k in str(location)
+                        for k in ("食堂", "清晏", "紫荆", "听涛", "观稠", "桃李", "餐饮", "商业", "小吃", "便利店", "超市", "canteen", "dining")
+                    )
+                )
+            )
+        )
+    )
+    essential_emergency = bool(is_basic_dining)
     savings = int(state["savings_minor"])
     usable_credit = (
         int(state["borrowing_minor"])

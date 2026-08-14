@@ -337,6 +337,49 @@ def get_space_snapshot(conn, day=None):
         for row in conn.execute("SELECT location, COUNT(*) AS count FROM residents GROUP BY location").fetchall()
     }
     total_agents = sum(actual_counts.values())
+
+    from app.spatial.location_catalog import real_world_locations
+    real_locations = real_world_locations(conn)
+    if real_locations:
+        spaces = []
+        for loc in real_locations:
+            location_name = loc["name"]
+            capacity = int(loc.get("capacity") or 100)
+            actual_agents = int(actual_counts.get(location_name, 0))
+            crowd_percent = round(actual_agents * 100 / max(1, total_agents)) if total_agents > 0 else 0
+            demand_percent = clamp(env.get("campus_flow", 50))
+            raw_status = str(loc.get("status") or "open")
+            effective_status = "开放" if raw_status in ("open", "开放") else ("已关闭" if raw_status in ("closed", "已关闭") else raw_status)
+
+            relevant_events = []
+            for event in active_events:
+                targets = json.loads(event.get("target_spaces") or "[]") if isinstance(event.get("target_spaces"), str) else (event.get("target_spaces") or [])
+                if location_name in targets:
+                    relevant_events.append(event["title"])
+
+            spaces.append(
+                {
+                    "code": str(loc["id"]),
+                    "name": location_name,
+                    "location": location_name,
+                    "capacity": capacity,
+                    "open_hour": 0,
+                    "close_hour": 24,
+                    "status": "开放",
+                    "crowd_field": "campus_flow",
+                    "purpose": f"{loc.get('node_type', 'building')} 空间",
+                    "crowd_percent": crowd_percent,
+                    "demand_percent": demand_percent,
+                    "actual_agents": actual_agents,
+                    "estimated_occupancy": round(capacity * demand_percent / 100),
+                    "occupancy": actual_agents,
+                    "available_slots": max(0, capacity - actual_agents),
+                    "effective_status": effective_status,
+                    "active_events": relevant_events,
+                }
+            )
+        return {"hour": hour, "spaces": spaces, "active_events": active_events}
+
     spaces = []
     for row in conn.execute("SELECT * FROM campus_spaces ORDER BY code").fetchall():
         space = dict(row)
@@ -379,6 +422,7 @@ def get_space_snapshot(conn, day=None):
         )
         spaces.append(space)
     return {"hour": hour, "spaces": spaces, "active_events": active_events}
+
 
 
 def default_event_configuration(env, event_type, intensity, target_spaces):

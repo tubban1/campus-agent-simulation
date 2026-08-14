@@ -404,10 +404,17 @@ def seed_supply_foundation(conn):
                 source_type="supply_seed", ledger_transaction_id=ledger_id,
             )
     _seed_recipes_and_services(conn)
+    from app.supply.procurement import seed_default_suppliers
+
+    procurement_seed = seed_default_suppliers(conn)
     counts = {}
     for table in ("catalog_items", "inventory_accounts", "production_recipes", "service_offerings"):
         counts[table] = int(conn.execute(f"SELECT COUNT(*) value FROM {table}").fetchone()["value"])
-    return {**counts, "opening_movements_created": opening_created}
+    return {
+        **counts,
+        "opening_movements_created": opening_created,
+        "procurement_suppliers": procurement_seed["suppliers"],
+    }
 
 
 def _post_inventory_opening(conn, account, quantity, unit_cost):
@@ -773,6 +780,9 @@ def process_supply_runtime(conn, world_time=None):
             "blocked": [],
             "wasted": [],
         }
+    from app.supply.procurement import process_procurement_runtime
+
+    procurement = process_procurement_runtime(conn, world_time)
     now = _now(world_time)
     completed = [
         _complete_production_batch(conn, row, now)
@@ -796,4 +806,5 @@ def process_supply_runtime(conn, world_time=None):
         "started": started,
         "blocked": blocked,
         "wasted": _process_daily_waste(conn, now),
+        "procurement": procurement,
     }

@@ -4,6 +4,7 @@ from typing import Optional
 
 from pathlib import Path
 
+from alembic import command
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
@@ -84,6 +85,32 @@ def list_business_tables(engine: Engine) -> list[str]:
 
 def create_migration_engine(database_url: Optional[str] = None) -> Engine:
     return create_database_engine(database_url)
+
+
+def migrate_pending_to_head() -> dict:
+    """Apply any pending Alembic migrations so runtime tables exist.
+
+    Safe to call at application startup: it is a no-op when the database is
+    already at head, and it refuses to touch an unversioned schema (which is
+    bootstrapped by scripts/deploy_database.py).
+    """
+    engine = create_migration_engine()
+    config = get_alembic_config()
+    try:
+        current = get_current_revision(engine)
+        head = get_head_revision(config)
+        if current is None:
+            return {"applied": False, "reason": "unversioned_schema"}
+        if current == head:
+            return {"applied": False, "reason": "already_at_head"}
+        command.upgrade(config, "head")
+        return {
+            "applied": True,
+            "from_revision": current,
+            "to_revision": get_current_revision(engine),
+        }
+    finally:
+        engine.dispose()
 
 
 def describe_database_target(engine: Engine) -> dict:

@@ -15,7 +15,11 @@ class PostgresCompatibilityTest(unittest.TestCase):
 
         connection.execute(statement)
 
-        raw_connection.execute.assert_called_once_with(statement)
+        # Literal percent signs in LIKE patterns are escaped to `%%` so that
+        # psycopg never mistakes them for placeholders.
+        raw_connection.execute.assert_called_once_with(
+            "SELECT id FROM residents WHERE role LIKE '%%学生%%'"
+        )
 
     def test_parameterized_query_still_passes_translated_parameters(self):
         raw_connection = Mock()
@@ -52,6 +56,23 @@ class PostgresCompatibilityTest(unittest.TestCase):
         self.assertNotIn("RETURNING id", statement)
         self.assertIn("ON CONFLICT DO NOTHING", statement)
         self.assertEqual(params, (1, 2, "system:credit-union", "issue"))
+
+    def test_parameterized_query_with_literal_percent_escapes_like_pattern(self):
+        raw_connection = Mock()
+        cursor = Mock()
+        cursor.rowcount = 0
+        raw_connection.execute.return_value = cursor
+        connection = PostgresConnection(raw_connection)
+
+        connection.execute(
+            "SELECT COUNT(*) AS count FROM spatial_edges WHERE name LIKE '%图书馆%' AND weather_factor > ?",
+            (2.0,),
+        )
+
+        statement, params = raw_connection.execute.call_args.args
+        self.assertIn("LIKE '%%图书馆%%'", statement)
+        self.assertIn("weather_factor > %s", statement)
+        self.assertEqual(params, (2.0,))
 
 
 if __name__ == "__main__":

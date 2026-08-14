@@ -1,8 +1,12 @@
+from contextlib import contextmanager
 from pathlib import Path
+import logging
 import sqlite3
 import os
 import re
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
@@ -121,12 +125,54 @@ def _postgres_sql(sql: str) -> str:
         statement,
         flags=re.IGNORECASE,
     )
+    # psycopg treats a literal `%` as the start of a placeholder whenever a
+    # parameter tuple is supplied.  Escape such literal percent signs (for
+    # example LIKE '%图书馆%' used alongside a `?`) so they are preserved;
+    # this must happen before converting `?` -> `%s` so the generated
+    # placeholders stay intact.
+    statement = statement.replace("%", "%%")
     return statement.replace("?", "%s")
 
 
 def _postgres_script(sql: str) -> list[str]:
     normalized = re.sub(r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT", "SERIAL PRIMARY KEY", sql, flags=re.IGNORECASE)
     return [statement.strip() for statement in normalized.split(";") if statement.strip()]
+
+
+
+@contextmanager
+def db_savepoint(conn, name: str = "sp"):
+    """Nest a recoverable sub-transaction inside the caller's transaction.
+
+    If the body raises after aborting the underlying transaction (which in
+    PostgreSQL leaves the whole transaction unusable until rolled back), roll
+    back only this savepoint so the caller can keep working on a clean
+    transaction.  Works for both SQLite, SQLAlchemy connections, and the psycopg-backed wrapper.
+    """
+    def _exec_sql(stmt: str):
+        if hasattr(conn, "exec_driver_sql"):
+            conn.exec_driver_sql(stmt)
+        else:
+            try:
+                conn.execute(stmt)
+            except Exception:
+                from sqlalchemy import text
+                conn.execute(text(stmt))
+
+    _exec_sql(f"SAVEPOINT {name}")
+    try:
+        yield
+    except Exception:
+        try:
+            _exec_sql(f"ROLLBACK TO SAVEPOINT {name}")
+        except Exception:
+            pass
+        raise
+    else:
+        try:
+            _exec_sql(f"RELEASE SAVEPOINT {name}")
+        except Exception:
+            pass
 
 
 class PostgresCursor:
@@ -170,10 +216,18 @@ class PostgresConnection:
         self.close()
 
     def execute(self, sql, params=()):
-        if not isinstance(sql, str):
-            sql = str(sql)
-        statement = _postgres_sql(sql)
-        pragma = re.fullmatch(r"PRAGMA table_info\((\w+)\)", sql.strip(), re.IGNORECASE)
+        if not isinstance(sql, str) and hasattr(sql, "compile"):
+            from sqlalchemy.dialects import postgresql
+            compiled = sql.compile(dialect=postgresql.dialect())
+            statement = str(compiled)
+            execute_params = compiled.params
+            raw_sql_str = statement
+        else:
+            raw_sql_str = str(sql)
+            statement = _postgres_sql(raw_sql_str)
+            execute_params = params
+
+        pragma = re.fullmatch(r"PRAGMA table_info\((\w+)\)", raw_sql_str.strip(), re.IGNORECASE)
         if pragma:
             from app.db.engine import get_database_schema
 
@@ -184,20 +238,28 @@ class PostgresConnection:
             if cached_rows is not None:
                 return CachedPostgresCursor(cached_rows)
             execute_params = (schema, table_name)
-        else:
-            execute_params = params
-        table_match = re.search(r"INSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+(\w+)", sql, re.IGNORECASE)
+        table_match = re.search(r"INSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+(\w+)", raw_sql_str, re.IGNORECASE)
         table = table_match.group(1).lower() if table_match else ""
         needs_id = table in POSTGRES_ID_TABLES and "RETURNING" not in statement.upper()
         if needs_id:
             statement = f"{statement.rstrip(';')} RETURNING id"
 
-        if execute_params:
-            cursor = self._connection.execute(statement, execute_params)
-        else:
-            # Passing an empty tuple makes psycopg parse literal percent signs
-            # as placeholders (for example LIKE '%学生%').
-            cursor = self._connection.execute(statement)
+        try:
+            if execute_params:
+                cursor = self._connection.execute(statement, execute_params)
+            else:
+                # Passing an empty tuple makes psycopg parse literal percent signs
+                # as placeholders (for example LIKE '%学生%').
+                cursor = self._connection.execute(statement)
+        except Exception as exc:
+            # Log the statement that actually failed so a swallowed abort inside
+            # a world tick cannot hide the underlying cause behind the later
+            # generic InFailedSqlTransaction error.
+            logger.warning(
+                "Postgres statement failed (%s): %s\nSQL: %s",
+                type(exc).__name__, exc, statement,
+            )
+            raise
         if pragma:
             rows = cursor.fetchall()
             POSTGRES_TABLE_COLUMNS_CACHE[cache_key] = tuple(rows)
@@ -266,6 +328,7 @@ __all__ = [
     "DB_PATH",
     "PostgresConnection",
     "create_database_engine",
+    "db_savepoint",
     "execute_script",
     "get_connection",
     "get_database_url",

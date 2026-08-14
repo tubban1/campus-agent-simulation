@@ -456,8 +456,9 @@ def evaluate_market_choice(
         ).fetchone()
         disposable = int(cash["money"]) * 100 if cash else 0
     elasticity = int(mechanism["demand_elasticity_basis_points"]) / 10000
+    elasticity_factor = max(1.0, elasticity)
     willingness_factor = 0.55 + need / 200 + preference / 500 + social / 1000
-    maximum = _round_price(int(mechanism["base_price_minor"]) * willingness_factor * elasticity)
+    maximum = _round_price(int(mechanism["base_price_minor"]) * willingness_factor * elasticity_factor)
     maximum = min(disposable, max(maximum, int(mechanism["floor_price_minor"])))
     policy_terms = market_policy_terms(
         conn,

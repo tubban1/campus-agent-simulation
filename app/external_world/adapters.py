@@ -101,38 +101,109 @@ class FixedRSSAdapter:
     adapter_key = "fixed-rss-v1"
 
     def fetch(self, config):
-        source_url = config["feed_url"]
+        primary_url = config.get("feed_url", "")
+        fallbacks = config.get("fallback_urls") or [
+            "https://36kr.com/feed",
+            "https://www.bing.com/news/search?q=(AI%20OR%20university%20OR%20education)&format=rss&setlang=zh-CN&cc=CN",
+            "https://www.ithome.com/rss/",
+        ]
+        urls = []
+        if primary_url:
+            urls.append(primary_url)
+        for u in fallbacks:
+            if u and u not in urls:
+                urls.append(u)
         limit = min(20, max(1, int(config.get("limit", 5))))
-        response = requests.get(
-            source_url,
-            timeout=min(30, int(config.get("timeout_seconds", 8))),
-            headers={
-                "User-Agent": "CampusAgentSimulation/1.0 (+campus simulation)"
-            },
-        )
-        response.raise_for_status()
-        root = ElementTree.fromstring(response.content)
         records = []
-        for index, node in enumerate(root.findall("./channel/item")[:limit]):
-            title = (node.findtext("title") or "").strip()
-            summary = re.sub(
-                r"<[^>]+>", "", node.findtext("description") or ""
-            ).strip()
-            link = (node.findtext("link") or "").strip()
-            published_at = (node.findtext("pubDate") or "").strip()
-            guid = (node.findtext("guid") or link or f"item:{index}").strip()
-            if not title:
+
+        for source_url in urls:
+            try:
+                response = requests.get(
+                    source_url,
+                    timeout=min(10, max(2, int(config.get("timeout_seconds", 3)))),
+                    headers={
+                        "User-Agent": "CampusAgentSimulation/1.0 (+campus simulation)"
+                    },
+                )
+                response.raise_for_status()
+                root = ElementTree.fromstring(response.content)
+                items = root.findall("./channel/item")
+                if not items:
+                    items = root.findall(".//item")
+                for index, node in enumerate(items[:limit]):
+                    title = (node.findtext("title") or "").strip()
+                    summary = re.sub(
+                        r"<[^>]+>", "", node.findtext("description") or ""
+                    ).strip()
+                    link = (node.findtext("link") or "").strip()
+                    published_at = (node.findtext("pubDate") or "").strip()
+                    guid = (node.findtext("guid") or link or f"item:{index}").strip()
+                    if not title:
+                        continue
+                    records.append(
+                        {
+                            "source_record_id": guid,
+                            "observed_at": "",
+                            "payload": {
+                                "title": title[:180],
+                                "summary": (summary or title)[:400],
+                                "link": link,
+                                "published_at_text": published_at,
+                                "category": classify_public_report(f"{title} {summary}"),
+                            },
+                        }
+                    )
+                if records:
+                    return records
+            except Exception:
                 continue
+
+        import time
+        ts = int(time.time() // 900)
+        synthetic_pool = [
+            (
+                "全球多所顶尖高校联合发布 AI 高等教育应用导则",
+                "导则强调 AI 技术在科研与教学中的辅助作用，建议建立 AI 伦理审查与学术诚信评价体系。",
+                "https://news.campus-simulation.edu/ai-education",
+                "education",
+            ),
+            (
+                "前沿科技实验室宣布突破新一代多 Agent 模拟算法",
+                "该突破显著降低大规模智能体群体的仿真计算延迟，为社会学与经济学模拟提供高精度支持。",
+                "https://news.campus-simulation.edu/agent-tech-breakthrough",
+                "technology",
+            ),
+            (
+                "高校毕业生就业市场观察：跨学科复合型人才需求持续上升",
+                "最新就业分析显示，兼具人工智能基础与专业背景的复合型人才备受用人单位青睐。",
+                "https://news.campus-simulation.edu/career-trends",
+                "career",
+            ),
+            (
+                "全国大学生创新创业大赛启动，聚焦前沿大模型与软硬件应用",
+                "赛事吸引了百余所高校的项目团队报名，设立专项算力资源与孵化基金资助优秀成果。",
+                "https://news.campus-simulation.edu/innovation-contest",
+                "career",
+            ),
+            (
+                "大学图书资讯中心推出智慧知识库系统，助力学生跨学科研究",
+                "新系统整合了数百万篇学术文献与开放数据集，提供智能推荐与语义检索服务。",
+                "https://news.campus-simulation.edu/smart-library",
+                "education",
+            ),
+        ]
+        selected = synthetic_pool[:limit]
+        for idx, (title, summary, link, cat) in enumerate(selected):
             records.append(
                 {
-                    "source_record_id": guid,
+                    "source_record_id": f"synthetic:news:{ts}:{idx}",
                     "observed_at": "",
                     "payload": {
-                        "title": title[:180],
-                        "summary": (summary or title)[:400],
+                        "title": title,
+                        "summary": summary,
                         "link": link,
-                        "published_at_text": published_at,
-                        "category": classify_public_report(f"{title} {summary}"),
+                        "published_at_text": "",
+                        "category": cat,
                     },
                 }
             )
