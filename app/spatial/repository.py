@@ -58,14 +58,17 @@ class SpatialRepository:
         return self._execute_rows(statement)
 
     def list_edges(self, node_ids: Optional[set[int]] = None):
-        all_edges = self._execute_rows(select(spatial_edges).order_by(spatial_edges.c.id))
         if node_ids is not None:
-            return [
-                e
-                for e in all_edges
-                if e["from_node_id"] in node_ids and e["to_node_id"] in node_ids
-            ]
-        return all_edges
+            if not node_ids:
+                return []
+            statement = select(spatial_edges).where(
+                and_(
+                    spatial_edges.c.from_node_id.in_(node_ids),
+                    spatial_edges.c.to_node_id.in_(node_ids),
+                )
+            ).order_by(spatial_edges.c.id)
+            return self._execute_rows(statement)
+        return self._execute_rows(select(spatial_edges).order_by(spatial_edges.c.id))
 
     def list_worlds(self):
         all_nodes = self._execute_rows(select(spatial_nodes).order_by(spatial_nodes.c.id))

@@ -103,7 +103,7 @@ function densestAgentCluster(states) {
 function viewportKey(viewport) {
   if (!viewport) return "full";
   return [viewport.minX, viewport.minZ, viewport.maxX, viewport.maxZ]
-    .map(value => Math.round(value / 25) * 25)
+    .map(value => Math.round(value / 120) * 120)
     .join(":");
 }
 
@@ -359,11 +359,12 @@ async function loadSpatialWorld(shouldRender = true, forceRefresh = false, isIni
         });
     }
 
+    const isViewportOnly = shouldRender && !forceRefresh && !isInitialFit && viewport != null;
     const [sceneData, agentsResponse, queueResponse, bodyResponse] = await Promise.all([
       scenePromise,
       fetch("/api/spatial/agents", { signal }).catch(() => null),
-      fetch("/api/spatial/admission-queue", { signal }).catch(() => null),
-      fetch("/api/body-states", { signal }).catch(() => null)
+      !isViewportOnly ? fetch("/api/spatial/admission-queue", { signal }).catch(() => null) : Promise.resolve(null),
+      !isViewportOnly ? fetch("/api/body-states", { signal }).catch(() => null) : Promise.resolve(null)
     ]);
 
     if (signal.aborted || requestToken !== WorldStore.sceneRequestToken) {

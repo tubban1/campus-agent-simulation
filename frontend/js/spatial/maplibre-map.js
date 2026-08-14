@@ -183,32 +183,30 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
     // The 2D and 3D modes share one local spatial window.  Moving the map to
     // a different campus area asks the application for that window only.
     let viewportMoveTimer = null;
-    maplibreInstance.on('move', () => {
+    const updateViewportBounds = () => {
       const center = maplibreInstance?.getCenter();
-      if (!center || typeof window.requestSpatialViewportAtLngLat !== 'function') return;
+      if (!center) return;
+      const zoom = maplibreInstance.getZoom();
+      if (typeof window.requestSpatialViewportForMapBounds === 'function') {
+        window.requestSpatialViewportForMapBounds(maplibreInstance.getBounds(), zoom);
+      } else if (typeof window.requestSpatialViewportAtLngLat === 'function') {
+        window.requestSpatialViewportAtLngLat(center.lng, center.lat, zoom);
+      }
+    };
+
+    maplibreInstance.on('move', () => {
       clearTimeout(viewportMoveTimer);
-      viewportMoveTimer = setTimeout(() => {
-        const zoom = maplibreInstance.getZoom();
-        if (typeof window.requestSpatialViewportForMapBounds === 'function') {
-          window.requestSpatialViewportForMapBounds(maplibreInstance.getBounds(), zoom);
-        } else {
-          window.requestSpatialViewportAtLngLat(center.lng, center.lat, zoom);
-        }
-      }, 80);
+      viewportMoveTimer = setTimeout(updateViewportBounds, 220);
     });
+
+    maplibreInstance.on('moveend', () => {
+      clearTimeout(viewportMoveTimer);
+      updateViewportBounds();
+    });
+
     maplibreInstance.on('zoomend', () => {
       syncAgentAvatarMarkers(latestAgentFeatures);
-      const center = maplibreInstance.getCenter();
-      if (center && typeof window.requestSpatialViewportAtLngLat === 'function') {
-        // A pure zoom does not always emit a useful pan delta; request the
-        // correct-sized geographic window explicitly so POIs can appear.
-        const zoom = maplibreInstance.getZoom();
-        if (typeof window.requestSpatialViewportForMapBounds === 'function') {
-          window.requestSpatialViewportForMapBounds(maplibreInstance.getBounds(), zoom);
-        } else {
-          window.requestSpatialViewportAtLngLat(center.lng, center.lat, zoom);
-        }
-      }
+      updateViewportBounds();
     });
 
     // Handle background click on blank map area to trigger physical map environment event

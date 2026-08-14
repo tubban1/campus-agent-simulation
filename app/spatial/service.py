@@ -93,42 +93,46 @@ class SpatialService:
                 round(max(lats), 7),
             ]
 
-        checksum_source = {
-            "nodes": [
-                {
-                    key: node[key]
-                    for key in (
-                        "id",
-                        "code",
-                        "parent_id",
-                        "x",
-                        "y",
-                        "z",
-                        "capacity",
-                        "status",
-                    )
-                }
-                for node in nodes
-            ],
-            "edges": [
-                {
-                    key: edge[key]
-                    for key in (
-                        "id",
-                        "from_node_id",
-                        "to_node_id",
-                        "distance_meters",
-                        "status",
-                        "congestion_factor",
-                        "weather_factor",
-                    )
-                }
-                for edge in edges
-            ],
-        }
-        checksum = hashlib.sha256(
-            json.dumps(checksum_source, sort_keys=True).encode("utf-8")
-        ).hexdigest()
+        has_viewport = all(v is not None for v in (min_x, min_z, max_x, max_z))
+        if has_viewport:
+            checksum = f"vp-{len(nodes)}-{len(edges)}-{nodes[0]['id'] if nodes else 0}-{edges[0]['id'] if edges else 0}"
+        else:
+            checksum_source = {
+                "nodes": [
+                    {
+                        key: node[key]
+                        for key in (
+                            "id",
+                            "code",
+                            "parent_id",
+                            "x",
+                            "y",
+                            "z",
+                            "capacity",
+                            "status",
+                        )
+                    }
+                    for node in nodes
+                ],
+                "edges": [
+                    {
+                        key: edge[key]
+                        for key in (
+                            "id",
+                            "from_node_id",
+                            "to_node_id",
+                            "distance_meters",
+                            "status",
+                            "congestion_factor",
+                            "weather_factor",
+                        )
+                    }
+                    for edge in edges
+                ],
+            }
+            checksum = hashlib.sha256(
+                json.dumps(checksum_source, sort_keys=True).encode("utf-8")
+            ).hexdigest()
         physical_states = list_spatial_physical_states(
             self.repository.connection,
             world_key=effective_world_key,
