@@ -258,13 +258,25 @@ async function loadSpatialWorlds() {
     if (select) {
       select.disabled = false;
       if (spatialWorlds.length) {
-        select.innerHTML = spatialWorlds.map(w =>
-          `<option value="${w.world_key}" ${w.world_key === currentWorldKey ? "selected" : ""}>${w.name} (${w.node_count} 节点 / ${w.edge_count} 边)</option>`
-        ).join("");
+        const sectorOptions = spatialWorlds.map((w, idx) => {
+          const sectorId = `Sector-${String(idx + 1).padStart(2, "0")}`;
+          const isTsinghua = w.world_key.includes("tsinghua") || w.world_key === "default";
+          const label = isTsinghua ? `🌐 World2 · ${sectorId}: ${w.name} (已连通 · ${w.node_count} 节点)` : `🌐 World2 · ${sectorId}: ${w.name} (${w.node_count} 节点)`;
+          return `<option value="${w.world_key}" ${w.world_key === currentWorldKey ? "selected" : ""}>${label}</option>`;
+        }).join("");
+
+        const futureSectors = `
+          <option value="" disabled>───────────── World2 待拓扑通道 ─────────────</option>
+          <option value="" disabled>🔒 Sector-02: 中关村科技创新区 (待解锁通道)</option>
+          <option value="" disabled>🔒 Sector-03: 硅谷数字孪生园区 (跨国维度联通中)</option>
+          <option value="" disabled>🔒 Sector-04: 虚拟赛博空间 (元宇宙多 Agent 协同)</option>
+        `;
+        select.innerHTML = sectorOptions + futureSectors;
       } else {
-        select.innerHTML = `<option value="default">数据库未找到空间节点 (需在 Supabase 执行 schema.sql 并导入节点)</option>`;
+        select.innerHTML = `<option value="default">World2 维度未读到节点 (需要刷新或初始化数据)</option>`;
       }
       select.onchange = (e) => {
+        if (!e.target.value) return;
         currentWorldKey = e.target.value;
         localStorage.setItem("spatial_world_key", currentWorldKey);
         sceneViewport = null;
@@ -1169,26 +1181,26 @@ function bindStudentMonitor() {
 }
 
 function renderObserverHud() {
-  const e = WorldStore.world?.environment || {}, runtime = WorldStore.worldRuntime || {}, status = runtime.status === "running" ? "运行中" : "已暂停", worldTime = formatWorldClock(true), worldDate = currentWorldClock().toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" });
+  const e = WorldStore.world?.environment || {}, runtime = WorldStore.worldRuntime || {}, status = runtime.status === "running" ? "维度的律动中" : "维度冻结", worldTime = formatWorldClock(true), worldDate = currentWorldClock().toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" });
   const activeWorld = (spatialWorlds || []).find(w => w.world_key === currentWorldKey) || {};
   const boundsLabel = activeWorld.wgs84_bounds ? `WGS84 [${activeWorld.wgs84_bounds.map(v => v.toFixed(3)).join(", ")}]` : "米制仿真";
-  if ($("observerCardTitle")) $("observerCardTitle").textContent = activeWorld.name || "校园真实图谱";
-  if ($("observerSubtitle")) $("observerSubtitle").textContent = `${status} · ${worldDate} ${worldTime} · ${e.weather || "校园天气"} ${e.temperature ?? "--"}°C`;
+  if ($("observerCardTitle")) $("observerCardTitle").textContent = activeWorld.name ? `World2 · ${activeWorld.name}` : "World2 · 平行世界观察舱";
+  if ($("observerSubtitle")) $("observerSubtitle").textContent = `Sector-01 · ${status} · ${worldDate} ${worldTime} · ${e.weather || "环境气象"} ${e.temperature ?? "--"}°C`;
   if ($("observerMetrics")) {
     $("observerMetrics").innerHTML = [
-      `地图 ${activeWorld.name || "校园"}`,
+      `Sector: ${activeWorld.name || "清华校区"}`,
       `坐标 ${boundsLabel}`,
-      `时段 ${e.time_slot || "运行中"}`,
-      `活跃 Agent ${WorldStore.agents.length}`,
-      `拖动浏览 · 按钮或手势缩放`
+      `维度时段 ${e.time_slot || "运行中"}`,
+      `驻留 Agent ${WorldStore.agents.length} 位`,
+      `多 Sector 拓扑星图`
     ].map(text => `<span class="hud-chip">${text}</span>`).join("");
   }
   if ($("observerEvents")) {
     $("observerEvents").innerHTML = renderStudentMonitor();
     bindStudentMonitor();
   }
-  if ($("observerFocusTitle")) $("observerFocusTitle").textContent = `观察：${WorldStore.observedFocus}`;
-  if ($("observerFocusText")) $("observerFocusText").textContent = "拖动浏览真实地图，使用右侧按钮或手势缩放；点击建筑或 Agent 查看局部状态。";
+  if ($("observerFocusTitle")) $("observerFocusTitle").textContent = `维度观察：${WorldStore.observedFocus}`;
+  if ($("observerFocusText")) $("observerFocusText").textContent = "拖动探索 World2 平行空间地图，使用右侧按钮或手势缩放；点击建筑或 Agent 观察维度细节。";
 }
 
 function ensureRuntimePanel() {

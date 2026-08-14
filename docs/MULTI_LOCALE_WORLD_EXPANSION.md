@@ -1,7 +1,10 @@
-# 多语境与跨区域开放世界扩展规格 (Multi-Locale World Expansion Spec)
+# World2 平行宇宙：多语境与跨区域开放世界扩展规格 (World2 Multiverse Expansion Spec)
 
-> **定位**：本规格书是 [ENVIRONMENT_REALISM_ROADMAP1.md](ENVIRONMENT_REALISM_ROADMAP1.md)（物理与底层机制）、[ENVIRONMENT_REALISM_ROADMAP2.md](ENVIRONMENT_REALISM_ROADMAP2.md)（主体认知与观察）及 [ENVIRONMENT_REALISM_ROADMAP3.md](ENVIRONMENT_REALISM_ROADMAP3.md)（算法与 LLM 分工）的**多区域/多语境落地扩展子规范**。  
-> **目标**：指导系统从单校区（清华大学）无缝扩展至全球任意大学/社区/城市（如 UC Berkeley、ETH Zürich），支持多时区、多语言、多货币及本地化制度体系。
+> **世界观核心定位 (World2 Vision)**：  
+> 本系统的底层核心世界观为 **World2** —— 一个由自治 AI Agent 完全驱动的**互联平行宇宙 (Agent-Driven Parallel Multiverse)**。清华大学校区仅为 World2 的**首个联通空间 Sector（Sector-01）**。未来系统将逐步解锁与连通中关村科技园区（Sector-02）、硅谷数字孪生园区（Sector-03）及虚拟赛博协同空间（Sector-04），构建多 Sector 跨域连通的平行维度网络。
+>
+> **规范定位**：本规格书是 [ENVIRONMENT_REALISM_ROADMAP1.md](ENVIRONMENT_REALISM_ROADMAP1.md)（物理与底层机制）、[ENVIRONMENT_REALISM_ROADMAP2.md](ENVIRONMENT_REALISM_ROADMAP2.md)（主体认知与观察）及 [ENVIRONMENT_REALISM_ROADMAP3.md](ENVIRONMENT_REALISM_ROADMAP3.md)（算法与 LLM 分工）的**多 Sector / 多维度落地扩展子规范**。  
+> **目标**：指导系统从单校区无缝扩展至 World2 多区域、跨维度开放世界，支持多 Sector 拓扑、跨维度 Agent 迁徙、多时区、多语言、多货币及本地化制度体系。
 
 ---
 

@@ -4,21 +4,21 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>校园 Agent 地图</title>
-  <meta name="description" content="持续运行的校园平行世界，观察 Agent 在校园空间中的移动、互动、事件流和关系网络。">
+  <title>World2 · Agent 平行世界</title>
+  <meta name="description" content="World2：由 Agent 自主驱动的互联平行宇宙。观察 Agent 在不同维度 Sector 中的移动、决策、社会博弈与关系演化。">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="alternate icon" href="/favicon.ico" sizes="32x32">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <meta property="og:type" content="website">
-  <meta property="og:site_name" content="校园 Agent 地图">
-  <meta property="og:title" content="校园 Agent 地图">
-  <meta property="og:description" content="进入一个持续运行的校园平行世界，观察 Agent 的自主感知、行动和关系演化。">
+  <meta property="og:site_name" content="World2 · Agent 平行世界">
+  <meta property="og:title" content="World2 · Agent 平行世界">
+  <meta property="og:description" content="进入 World2 维度通道，观察 Agent 在平行世界 Sector 中的自主感知、决策与关系演化。">
   <meta property="og:image" content="/share-image.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="校园 Agent 地图">
-  <meta name="twitter:description" content="持续运行的校园平行世界，观察 Agent 移动、事件流和关系网络。">
+  <meta name="twitter:title" content="World2 · Agent 平行世界">
+  <meta name="twitter:description" content="World2 平行世界：Agent 驱动的自治生态、事件流与多维度网络。">
   <meta name="twitter:image" content="/share-image.png">
   <link rel="stylesheet" href="/vendor/maplibre/maplibre-gl.css" />
   <script src="/vendor/maplibre/maplibre-gl.js"></script>
@@ -29,23 +29,23 @@
 <body>
   <header class="topbar">
     <div class="brand">
-      <div class="logo">A</div>
+      <div class="logo" style="background: linear-gradient(135deg, #1769aa, #45a878); font-size: 13px; font-weight: 900; letter-spacing: -0.5px;">W2</div>
       <div>
-        <h1>校园 Agent 地图</h1>
-        <div class="subtitle">封闭校园中的自主感知、决策与行动</div>
+        <h1>World2 · Agent 平行世界</h1>
+        <div class="subtitle">Agent 驱动的自治平行宇宙 · 清华校区 Sector-01</div>
       </div>
     </div>
-    <div class="actions"><span class="day" id="dayLabel">正在读取世界状态</span><button id="openNewspaper">校园日报</button><button
-        id="refresh">刷新</button><button class="primary admin-only" id="simulate">模拟一天</button></div>
+    <div class="actions"><span class="day" id="dayLabel">正在接入 World2 维度...</span><button id="openNewspaper">World2 日报</button><button
+        id="refresh">刷新维度</button><button class="primary admin-only" id="simulate">模拟推进一天</button></div>
   </header>
   <div class="app">
     <section class="observer-world" id="observerWorld">
       <div id="maplibreContainer" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;background:#102033;"></div>
       <div class="observer-hud">
         <div class="hud-card">
-          <h2 id="observerCardTitle">校园真实图谱</h2>
-          <p id="observerSubtitle">正在接入实时校园...</p>
-          <div style="margin-top:4px"><select id="worldKeySelector" class="world-key-select" aria-label="切换校园地图"><option value="">正在载入真实世界…</option></select></div>
+          <h2 id="observerCardTitle">World2 · 平行世界观察舱</h2>
+          <p id="observerSubtitle">实时接入：清华校区 Sector-01 (已连通)...</p>
+          <div style="margin-top:6px"><select id="worldKeySelector" class="world-key-select" aria-label="切换 World2 平行空间维度"><option value="">正在接入 World2 星图网络…</option></select></div>
           <div class="hud-metrics" id="observerMetrics"><span class="hud-chip">读取中</span></div>
         </div>
         <div class="hud-events" id="observerEvents"></div>
@@ -54,31 +54,31 @@
           aria-label="放大地图">+</button><span class="camera-zoom-value" id="cameraZoomValue">地图</span><button
           id="cameraZoomOut" type="button" title="缩小地图" aria-label="缩小地图">−</button></div>
       <div class="observer-actions">
-        <div class="observer-focus"><strong id="observerFocusTitle">自由观察模式</strong><span id="observerFocusText">点击校园空间或
-            Agent 进入局部观察。</span></div>
+        <div class="observer-focus"><strong id="observerFocusTitle">World2 自由观察模式</strong><span id="observerFocusText">点击 Sector
+            空间节点或 Agent 查看维度细节。</span></div>
         <div class="observe-buttons"><button id="jumpToData">↓
-            查看数据层</button><button id="jumpToAgents">居民列表</button><button class="primary admin-only" id="hudWorldTick">推进
-            tick</button></div>
+            切换数据维度</button><button id="jumpToAgents">World2 居民</button><button class="primary admin-only" id="hudWorldTick">推进
+            Tick</button></div>
       </div>
-      <div class="map-attribution" id="mapAttribution" style="position:absolute;bottom:10px;right:10px;font-size:11px;color:rgba(255,255,255,0.85);background:rgba(10,24,37,0.82);padding:4px 10px;border-radius:4px;z-index:10;pointer-events:auto;backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,0.25);">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" style="color:#7ce3b8;text-decoration:none;font-weight:600;">OpenStreetMap</a> contributors | MapLibre GL JS | WGS84 EPSG:4326</div>
+      <div class="map-attribution" id="mapAttribution" style="position:absolute;bottom:10px;right:10px;font-size:11px;color:rgba(255,255,255,0.85);background:rgba(10,24,37,0.82);padding:4px 10px;border-radius:4px;z-index:10;pointer-events:auto;backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,0.25);">World2 Multiverse Engine | © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" style="color:#7ce3b8;text-decoration:none;font-weight:600;">OpenStreetMap</a> contributors | MapLibre GL JS</div>
     </section>
     <section class="data-dashboard" id="dataDashboard">
       <aside class="overview">
-        <h2 class="panel-title">校园全局状态</h2>
-        <div class="small">环境会影响 Agent 的感知和选择</div>
+        <h2 class="panel-title">World2 世界全局状态</h2>
+        <div class="small">环境维度直接影响 Agent 的感知、概率决策与行为演化</div>
         <div class="block">
           <div class="environment" id="environment">
             <div class="empty">正在读取环境...</div>
           </div>
         </div>
         <div class="block">
-          <div class="section-label"><h2 class="panel-title" style="padding:0">外部世界</h2><span>每小时自动同步</span></div>
-          <div class="small" style="padding:8px 0">固定公共新闻源会由后台接入，先由少数相关 Agent 接收，再经关系传播。</div>
+          <div class="section-label"><h2 class="panel-title" style="padding:0">World2 外部维基与资讯</h2><span>定时同步</span></div>
+          <div class="small" style="padding:8px 0">真实世界信息与外部资讯经由维度通道接入，由核心 Agent 率先感知并传播。</div>
           <div class="external-list" id="externalInfo"><div class="empty">等待后台自动同步外部资讯。</div></div>
         </div>
         <div class="block">
-          <h2 class="panel-title" style="padding:0 0 10px">自主循环</h2>
-          <p class="task">环境变化 → Agent 感知 → 自主决策 → 行动反馈 → 新事件</p>
+          <h2 class="panel-title" style="padding:0 0 10px">World2 自主演化循环</h2>
+          <p class="task">维度变化 → Agent 感知 → 自主决策 → 空间行动 → 关系涌现</p>
           <p class="status" id="status">等待操作</p>
           <div class="right-actions"><button id="detailRefresh">刷新状态</button><button class="primary admin-only"
               id="detailSimulate">模拟一天</button></div>
@@ -87,17 +87,17 @@
       <main class="centerboard">
         <section class="board-block wide">
           <div class="board-head">
-            <h2>校园地图</h2><span class="small" id="campusMapMeta" style="padding:0">头像表示 Agent 当前所在空间</span>
+            <h2>World2 平行空间地图</h2><span class="small" id="campusMapMeta" style="padding:0">头像表示 Agent 当前所在 Sector 节点</span>
           </div>
           <div class="board-body">
             <div class="campus-map" id="campusMap">
-              <div class="empty">正在绘制校园地图...</div>
+              <div class="empty">正在绘制 World2 空间地图...</div>
             </div>
           </div>
         </section>
         <section class="board-block wide">
           <div class="board-head">
-            <h2>校园空间运行</h2><span class="small" style="padding:0">容量、拥挤度与开放状态</span>
+            <h2>World2 空间枢纽运行</h2><span class="small" style="padding:0">容量、拥挤度与开放状态</span>
           </div>
           <div class="board-body">
             <div class="space-list" id="spaceList">
