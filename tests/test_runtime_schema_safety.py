@@ -109,7 +109,16 @@ class RuntimeSchemaSafetyTest(unittest.TestCase):
         self.assertIsNone(main.WORLD_RUNNER_THREAD)
 
     def test_only_world_tick_is_a_runtime_write_entrypoint(self):
-        paths = {route.path for route in main.app.routes if hasattr(route, "path")}
+        def _extract_paths(routes):
+            paths = set()
+            for route in routes:
+                if hasattr(route, "path"):
+                    paths.add(route.path)
+                if hasattr(route, "routes"):
+                    paths.update(_extract_paths(route.routes))
+            return paths
+
+        paths = _extract_paths(main.app.routes)
         self.assertIn("/api/admin/world/tick", paths)
         self.assertFalse(any(path.startswith("/api/simulate") for path in paths))
         self.assertFalse(hasattr(main, "run_lifecycle_step"))
