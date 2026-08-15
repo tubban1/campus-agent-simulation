@@ -69,10 +69,13 @@ def evaluate_world_action_preconditions(conn, resident_id, action_type, location
             f"{action_type} 不能在{location}完成",
         )
     if preconditions.get("location_open"):
+        from app.spatial.location_catalog import is_real_world_location
         location_is_open = (
             action_type == "rest" and is_residential_rest_location(location)
         ) or (
             location in VALID_LOCATIONS and is_location_open_at_hour(location, world_time.hour)
+        ) or (
+            is_real_world_location(conn, location)
         )
         add_check(
             "location_open",
@@ -82,13 +85,30 @@ def evaluate_world_action_preconditions(conn, resident_id, action_type, location
             "location_closed",
             f"{location}当前未开放",
         )
-    if preconditions.get("capacity_available") and location in VALID_LOCATIONS:
+    if preconditions.get("capacity_available"):
         snapshot = get_space_snapshot(conn)
-        space = next((item for item in snapshot["spaces"] if item["location"] == location), None)
+        space = next((item for item in snapshot.get("spaces", []) if item.get("location") == location), None)
+        if not space:
+            matching_spaces = [
+                item for item in snapshot.get("spaces", [])
+                if location in item.get("location", "") or item.get("location", "") in location
+            ]
+            if matching_spaces:
+                total_slots = sum(int(s.get("available_slots", 0)) for s in matching_spaces)
+                any_open = any(s.get("effective_status") not in ("关闭", "已关闭") for s in matching_spaces)
+                space = {
+                    "location": location,
+                    "available_slots": total_slots if any_open else 0,
+                    "effective_status": "开放" if any_open else "关闭"
+                }
+
+        if not space and (location in VALID_LOCATIONS or is_residential_rest_location(location)):
+            space = {"location": location, "available_slots": 100, "effective_status": "开放"}
+
         available = int(space.get("available_slots", 0)) if space else 0
         add_check(
             "capacity_available",
-            bool(space) and available > 0 and space.get("effective_status") != "关闭",
+            bool(space) and available > 0 and space.get("effective_status") not in ("关闭", "已关闭"),
             available,
             "> 0",
             "space_full",

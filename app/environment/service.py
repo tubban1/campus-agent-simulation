@@ -93,11 +93,15 @@ def get_active_campus_events(conn, day=None, *, current_day, rows_to_dicts):
 
 
 def assert_destination_available(conn, destination, *, valid_locations, space_snapshot):
-    if destination not in valid_locations:
-        raise ValueError("地点不存在")
+    from app.spatial.location_catalog import is_real_world_location
+    dest_str = str(destination or "").strip()
+    if dest_str not in valid_locations and not is_real_world_location(conn, dest_str):
+        raise ValueError(f"地点 {destination} 不存在")
     snapshot = space_snapshot(conn)
-    space = next((item for item in snapshot["spaces"] if item["location"] == destination), None)
-    if space and space["effective_status"] != "开放":
+    space = next((item for item in snapshot.get("spaces", []) if item.get("location") == dest_str), None)
+    if not space:
+        space = next((item for item in snapshot.get("spaces", []) if dest_str in item.get("location", "") or item.get("location", "") in dest_str), None)
+    if space and space.get("effective_status") in ("关闭", "已关闭", "维护中", "暂停开放"):
         raise ValueError(f"{destination}当前{space['effective_status']}，Agent 需要调整计划")
 
 

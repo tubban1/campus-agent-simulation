@@ -107,8 +107,8 @@ def _seed_real_world_agent_states(connection: Connection, world_key: str) -> dic
                 social_energy=float(50 + resident_id % 31), health=float(88 + resident_id % 10),
                 weather_exposure=0.0, hydration=float(18 + resident_id % 14),
                 nutrition=float(72 + resident_id % 18), activity_load=float(10 + resident_id % 16),
-                illness_load=0.0, last_updated_at=None, last_updated_tick=0,
-                source="seeded", version=1,
+                illness_load=0.0, last_updated_at=func.now(), last_updated_tick=0,
+                source="seeded", version=1, updated_at=func.now(),
             ))
             body_states_created += 1
     seed_spatial_affordances(connection)
@@ -312,10 +312,11 @@ def seed_spatial_foundation(connection: Connection, *, real_world_key: Optional[
                     nutrition=float(72 + resident_id % 18),
                     activity_load=float(10 + resident_id % 16),
                     illness_load=0.0,
-                    last_updated_at=None,
+                    last_updated_at=func.now(),
                     last_updated_tick=0,
                     source="seeded",
                     version=1,
+                    updated_at=func.now(),
                 )
             )
             body_states_created += 1

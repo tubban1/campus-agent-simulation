@@ -62,7 +62,7 @@ class OpenMeteoAdapter:
                 "timezone": config.get("timezone", "Asia/Shanghai"),
                 "forecast_days": 1,
             },
-            headers={"User-Agent": "campus-agent-simulation/1.0"},
+            headers={"User-Agent": "world2/1.0"},
             timeout=min(30, int(config.get("timeout_seconds", 12))),
         )
         response.raise_for_status()
@@ -122,7 +122,7 @@ class FixedRSSAdapter:
                     source_url,
                     timeout=min(10, max(2, int(config.get("timeout_seconds", 3)))),
                     headers={
-                        "User-Agent": "CampusAgentSimulation/1.0 (+campus simulation)"
+                        "User-Agent": "World2/1.0 (+world simulation)"
                     },
                 )
                 response.raise_for_status()

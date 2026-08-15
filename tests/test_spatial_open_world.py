@@ -264,6 +264,30 @@ class SpatialOpenWorldTest(unittest.TestCase):
         self.assertEqual(ranked[0]["location"], "清晏楼餐厅")
         self.assertIn("travel_minutes_estimate", ranked[0]["reasons"])
 
+    def test_choose_weighted_real_location_distributes_agents_across_pois(self):
+        from app.spatial.location_catalog import choose_weighted_real_location
+
+        sample_geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "properties": {"@id": "node/601", "amenity": "restaurant", "name": "清晏楼餐厅"}, "geometry": {"type": "Point", "coordinates": [116.321, 40.001]}},
+                {"type": "Feature", "properties": {"@id": "node/602", "amenity": "restaurant", "name": "观畴园食堂"}, "geometry": {"type": "Point", "coordinates": [116.322, 40.002]}},
+                {"type": "Feature", "properties": {"@id": "node/603", "amenity": "restaurant", "name": "紫荆园餐饮"}, "geometry": {"type": "Point", "coordinates": [116.323, 40.003]}},
+                {"type": "Feature", "properties": {"@id": "node/604", "amenity": "restaurant", "name": "桃李园食堂"}, "geometry": {"type": "Point", "coordinates": [116.324, 40.004]}},
+            ],
+        }
+        with self.engine.begin() as conn:
+            import_real_world_geojson(conn, sample_geojson, world_key="tsinghua_main")
+
+        connection = self._test_get_connection()
+        choices = {}
+        for resident_id in range(1, 21):
+            loc = choose_weighted_real_location(connection, resident_id, "consume", hour=12, weather="晴")
+            choices[loc] = choices.get(loc, 0) + 1
+        connection.close()
+
+        self.assertGreater(len(choices), 1, "Agents must be distributed across multiple dining POIs!")
+
     def test_multi_world_importer_road_attachment_isolation(self):
         world_a_geojson = {
             "type": "FeatureCollection",

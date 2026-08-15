@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+  <rect width="160" height="160" rx="28" fill="#D98880"/>
+  <circle cx="80" cy="66" r="34" fill="#F8C471"/>
+  <path d="M48 62 C50 28 110 24 114 62 C104 42 58 42 48 62 Z" fill="#34495E"/>
+  <circle cx="67" cy="68" r="4" fill="#1F2937"/>
+  <circle cx="93" cy="68" r="4" fill="#1F2937"/>
+  <path d="M70 83 Q80 91 91 83" stroke="#8B3A3A" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <path d="M45 154 C48 112 112 112 115 154 Z" fill="#2C3E50"/>
+  
+          <!-- Balding Forehead Hair Sides -->
+          <path d="M42 55 Q40 80 48 90 M118 55 Q120 80 112 90" stroke="#34495E" stroke-width="8" fill="none"/>
+          <!-- Ruff Collar -->
+          <path d="M50 112 Q80 125 110 112" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" fill="none"/>
+          <!-- Moustache & Goatee -->
+          <path d="M68 78 Q80 84 92 78" stroke="#34495E" stroke-width="3" fill="none"/>
+          <polygon points="76,84 84,84 80,94" fill="#34495E"/>
+        
+</svg>

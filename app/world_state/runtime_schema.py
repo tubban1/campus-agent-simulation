@@ -100,8 +100,8 @@ def ensure_world_runtime_tables(conn, *, allow_ddl=False):
         conn.execute(
             """
             UPDATE world_runtime
-            SET daily_auto_model_budget = 500
-            WHERE id = ? AND daily_auto_model_budget < 500
+            SET daily_auto_model_budget = 1000
+            WHERE id = ? AND daily_auto_model_budget < 1000
             """,
             (WORLD_RUNTIME_ID,),
         )

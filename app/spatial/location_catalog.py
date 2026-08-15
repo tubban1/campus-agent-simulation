@@ -123,7 +123,13 @@ def supports_action(location: str, action: str, resource_keys: Optional[Set[str]
     }.get(action, "general") in categories or action in {"move", "chat", "reflect", "collaborate", "conflict"}
 
 
-def best_real_location(conn, action: str, *, current_location: str = "") -> str | None:
+def best_real_location(conn, action: str, *, current_location: str = "", resident_id: Optional[int] = None, hour: int = 12, weather: str = "") -> str | None:
+    if conn and resident_id:
+        choice = choose_weighted_real_location(
+            conn, resident_id, action, hour=hour, weather=weather, current_location=current_location
+        )
+        if choice:
+            return choice
     candidates = real_world_locations(conn)
     if not candidates:
         return None
@@ -186,25 +192,16 @@ def rank_real_location_options(conn, resident_id: int, action: str, *, hour: int
             (resident_id,),
         )
     except Exception as exc:
-        # Optional spatial runtime tables may not exist in isolated legacy
-        # fixtures.  Fall back to a default physical state so real-POI ranking
-        # stays available with reduced fidelity instead of failing the tick.
         if any(token in str(exc) for token in ("agent_spatial_states", "agent_spatial_capabilities", "agent_body_states")):
             state = []
         else:
             raise
-    # A partially initialized Agent must still be able to discover actual
-    # locations.  Missing optional physiology/capability records lower score
-    # fidelity, not the existence of the physical world.
     current = state[0] if state else {
         "current_node_id": None, "x": 0.0, "y": 0.0, "z": 0.0,
         "base_speed_m_per_min": 70.0, "hunger": 0.0, "fatigue": 0.0,
         "health": 100.0, "location": "", "role": "",
     }
     candidates = real_world_locations(conn)
-    # A decision compares a small, meaningful frontier rather than scanning
-    # every classroom in a 13k-node campus.  This keeps one Agent tick bounded
-    # while preserving several genuine alternatives for rerouting.
     desired = [
         item for item in candidates
         if supports_action(item["name"], action, item["resource_keys"])
@@ -218,6 +215,9 @@ def rank_real_location_options(conn, resident_id: int, action: str, *, hour: int
     queues = {int(row["node_id"]): int(row["count"]) for row in queue_rows}
     physical_rows = _rows(conn, "SELECT node_id, access_status, crowd_density FROM spatial_physical_states")
     physical = {int(row["node_id"]): row for row in physical_rows}
+    occupancy_rows = _rows(conn, "SELECT location, COUNT(*) AS count FROM residents GROUP BY location")
+    occupancies = {str(row["location"]): int(row["count"]) for row in occupancy_rows}
+
     speed = max(20.0, float(current.get("base_speed_m_per_min") or 70.0))
     hunger = float(current.get("hunger") or 0)
     fatigue = float(current.get("fatigue") or 0)
@@ -231,25 +231,82 @@ def rank_real_location_options(conn, resident_id: int, action: str, *, hour: int
         queue_penalty = queues.get(int(candidate["id"]), 0) * 2.5
         crowd_penalty = float(physical_state.get("crowd_density") or 0) * 12.0
         weather_penalty = 10.0 if "activity" in candidate["categories"] and any(token in str(weather) for token in ("雨", "雪", "雷", "大风")) else 0.0
+
+        cand_capacity = int(candidate.get("capacity") or 100)
+        cand_occ = occupancies.get(candidate["name"], 0)
+        capacity_penalty = 0.0
+        is_full = False
+        if cand_capacity > 0:
+            if cand_occ >= cand_capacity:
+                is_full = True
+                capacity_penalty = 40.0
+            elif (cand_occ / cand_capacity) >= 0.75:
+                capacity_penalty = (cand_occ / cand_capacity) * 18.0
+
         need_bonus = 0.0
         if action == "consume":
             need_bonus = hunger * 0.35
         elif action == "rest":
             need_bonus = fatigue * 0.30
+
+        # Agent-specific deterministic preference bias
+        pref_bias = (hash((resident_id, candidate["name"])) % 13) * 1.5
+
         facility = None
         if action in {"consume", "hydrate", "rest", "observe", "collaborate"}:
             from app.spatial.facility_service import facility_service_status
             facility = facility_service_status(conn, int(candidate["id"]), action, hour=hour)
-        available = access == "open" and (facility is None or facility["available"])
-        score = round(100.0 + need_bonus - travel - queue_penalty - crowd_penalty - weather_penalty, 3)
+
+        available = access == "open" and not is_full and (facility is None or facility["available"])
+        score = round(100.0 + need_bonus + pref_bias - travel - queue_penalty - crowd_penalty - weather_penalty - capacity_penalty, 3)
         scored.append({
             "node_id": int(candidate["id"]), "location": candidate["name"], "score": score,
             "available": available,
             "reasons": {
                 "travel_minutes_estimate": round(travel, 2), "queue_penalty": queue_penalty,
                 "crowd_penalty": crowd_penalty, "weather_penalty": weather_penalty,
+                "capacity_penalty": round(capacity_penalty, 2), "preference_bias": pref_bias,
                 "need_bonus": round(need_bonus, 2), "access_status": access,
                 "facility": facility,
             },
         })
     return sorted(scored, key=lambda item: (not item["available"], -item["score"], item["location"]))
+
+
+def choose_weighted_real_location(
+    conn,
+    resident_id: int,
+    action: str,
+    *,
+    hour: int = 12,
+    weather: str = "",
+    current_location: str = "",
+) -> str | None:
+    """Select a real-world POI using probabilistic weighted sampling based on score & agent bias."""
+    import math
+    import random
+
+    ranked = rank_real_location_options(
+        conn, resident_id, action, hour=hour, weather=weather
+    )
+    if not ranked:
+        return None
+    available_items = [item for item in ranked if item.get("available")]
+    if not available_items:
+        available_items = ranked
+
+    candidates = available_items[:5]
+    if len(candidates) == 1:
+        return candidates[0]["location"]
+
+    scores = [float(item["score"]) for item in candidates]
+    max_score = max(scores)
+
+    weights = []
+    for item in candidates:
+        score_diff = float(item["score"]) - max_score
+        w = math.exp(score_diff / 15.0)
+        weights.append(w)
+
+    chosen = random.choices(candidates, weights=weights, k=1)[0]
+    return chosen["location"]

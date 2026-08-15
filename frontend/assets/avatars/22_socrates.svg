@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+  <rect width="160" height="160" rx="28" fill="#EAD0B3"/>
+  <circle cx="80" cy="66" r="34" fill="#F5CBA7"/>
+  <path d="M48 62 C50 28 110 24 114 62 C104 42 58 42 48 62 Z" fill="#D5D8DC"/>
+  <circle cx="67" cy="68" r="4" fill="#1F2937"/>
+  <circle cx="93" cy="68" r="4" fill="#1F2937"/>
+  <path d="M70 83 Q80 91 91 83" stroke="#8B3A3A" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <path d="M45 154 C48 112 112 112 115 154 Z" fill="#FDFBF7"/>
+  
+          <!-- Curly Hair -->
+          <circle cx="50" cy="50" r="14" fill="#D5D8DC"/>
+          <circle cx="110" cy="50" r="14" fill="#D5D8DC"/>
+          <circle cx="80" cy="36" r="16" fill="#D5D8DC"/>
+          <!-- Toga Sash -->
+          <path d="M48 118 Q80 135 112 154" stroke="#556B2F" stroke-width="6" fill="none"/>
+          <!-- Beard -->
+          <path d="M60 84 Q80 120 100 84" fill="#D5D8DC"/>
+        
+</svg>

@@ -12,6 +12,8 @@ from app.spatial.models import spatial_nodes, spatial_resources
 
 def _execute(conn, statement, parameters=()):
     if hasattr(conn, "exec_driver_sql"):
+        if getattr(conn.dialect, "name", "") == "postgresql":
+            statement = statement.replace("?", "%s")
         return conn.exec_driver_sql(statement, tuple(parameters))
     return conn.execute(statement, parameters)
 

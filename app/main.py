@@ -291,7 +291,7 @@ async def app_lifespan(_app):
 
 
 app = FastAPI(
-    title="真实地理校园 Agent 世界",
+    title="World2 · Agent 平行世界",
     version="1.0.0",
     lifespan=app_lifespan,
 )
@@ -391,7 +391,7 @@ DEFAULT_WORLD_UPDATE_SCHEDULES = [
         "cadence": "hourly",
         "interval_seconds": 3600,
         "rule_version": "multiscale-update-v1",
-        "metadata": {"description": "从居民位置与行动事件聚合校园空间活动"},
+        "metadata": {"description": "从居民位置与行动事件聚合 World2 空间活动"},
     },
     {
         "update_key": "social_dynamics",
@@ -726,26 +726,35 @@ def advance_group_goals(conn, day, action_results):
     return updates
 
 
-def schedule_location(task):
+def schedule_location(task, conn=None, resident_id=None):
     text = str(task or "")
+    action = None
     if any(word in text for word in ["早餐", "午餐", "晚餐", "吃饭", "备菜"]):
-        return "食堂"
-    if any(word in text for word in ["课程", "课", "实验", "面试", "小组讨论", "编程"]):
-        return "教学楼"
-    if any(word in text for word in ["图书馆", "自习", "阅读", "背单词", "论文", "查招聘", "投递简历"]):
-        return "图书馆"
-    if any(word in text for word in ["训练", "晨跑", "操场", "采访"]):
-        return "操场"
-    if any(word in text for word in ["开店", "促销", "订单", "调研", "奶茶", "商业"]):
-        return "商业街"
-    if any(word in text for word in ["通知", "校务", "审批", "巡查", "维护", "维修", "治理"]):
-        return "校务处"
-    if any(word in text for word in ["宿舍", "复盘", "休息", "睡"]):
-        return "宿舍区"
-    return None
+        action, fallback = "consume", "食堂"
+    elif any(word in text for word in ["课程", "课", "实验", "面试", "小组讨论", "编程"]):
+        action, fallback = "attend_class", "教学楼"
+    elif any(word in text for word in ["图书馆", "自习", "阅读", "背单词", "论文", "查招聘", "投递简历"]):
+        action, fallback = "attend_class", "图书馆"
+    elif any(word in text for word in ["训练", "晨跑", "操场", "采访"]):
+        action, fallback = "club_activity", "操场"
+    elif any(word in text for word in ["开店", "促销", "订单", "调研", "奶茶", "商业"]):
+        action, fallback = "consume", "商业街"
+    elif any(word in text for word in ["通知", "校务", "审批", "巡查", "维护", "维修", "治理"]):
+        action, fallback = "request_leave", "校务处"
+    elif any(word in text for word in ["宿舍", "复盘", "休息", "睡"]):
+        action, fallback = "rest", "宿舍区"
+    else:
+        return None
+
+    if conn and resident_id and action:
+        from app.spatial.location_catalog import choose_weighted_real_location
+        concrete = choose_weighted_real_location(conn, resident_id, action)
+        if concrete:
+            return concrete
+    return fallback
 
 
-def get_schedule_context(schedule, env):
+def get_schedule_context(schedule, env, conn=None, resident_id=None):
     entries = schedule if isinstance(schedule, list) else []
     time_text = str(env.get("real_time") or "")
     try:
@@ -761,7 +770,7 @@ def get_schedule_context(schedule, env):
             continue
         start = int(match.group(1)) * 60 + int(match.group(2))
         task = match.group(3).strip()
-        parsed.append({"entry": str(entry), "start_minutes": start, "task": task, "location": schedule_location(task)})
+        parsed.append({"entry": str(entry), "start_minutes": start, "task": task, "location": schedule_location(task, conn=conn, resident_id=resident_id)})
     if not parsed:
         return {"current_task": "自由安排", "is_due": False, "location": None, "minutes_until": None}
 
@@ -904,7 +913,7 @@ def fetch_met_no_weather(latitude=BEIJING_LATITUDE, longitude=BEIJING_LONGITUDE)
     response = requests.get(
         "https://api.met.no/weatherapi/locationforecast/2.0/compact",
         params={"lat": latitude, "lon": longitude},
-        headers={"User-Agent": "campus-agent-simulation/1.0 github.com/mai555555/campus-agent-simulation"},
+        headers={"User-Agent": "world2/1.0 github.com/tubban1/world2"},
         timeout=12,
     )
     response.raise_for_status()

@@ -8,6 +8,7 @@ import random
 from tools.city_tools import VALID_LOCATIONS
 from app.spatial.location_catalog import (
     best_real_location,
+    choose_weighted_real_location,
     is_real_world_location,
     rank_real_location_options,
     real_location_options,
@@ -230,7 +231,7 @@ def get_agent_module_state(conn, resident_id):
     hierarchy_level = profile_data.get("hierarchy_level", 1)
     hierarchy_title = get_hierarchy_title(hierarchy_level)
     env = get_campus_environment(conn)
-    schedule_context = get_schedule_context(schedule, env)
+    schedule_context = get_schedule_context(schedule, env, conn=conn, resident_id=resident["id"])
 
     return {
         "id": resident["id"],
@@ -407,8 +408,13 @@ def apply_realism_constraints_to_decision(conn, agent, decision, perception, wor
             conn, agent.get("id"), action, hour=hour, weather=weather
         ) if agent.get("id") else []
         decision["location_candidates"] = ranked[:5]
-        concrete = next((item["location"] for item in ranked if item["available"]), None)
-        concrete = concrete or best_real_location(conn, action, current_location=agent.get("location", ""))
+        concrete = None
+        if agent.get("id"):
+            concrete = choose_weighted_real_location(
+                conn, agent["id"], action, hour=hour, weather=weather, current_location=agent.get("location", "")
+            )
+        concrete = concrete or next((item["location"] for item in ranked if item["available"]), None)
+        concrete = concrete or best_real_location(conn, action, current_location=agent.get("location", ""), resident_id=agent.get("id"), hour=hour, weather=weather)
         if concrete:
             destination = concrete
         else:

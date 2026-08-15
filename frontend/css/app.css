@@ -159,12 +159,15 @@ aside {
   z-index: 4;
   inset: 18px 18px auto 18px;
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
   pointer-events: none;
 }
 
 .hud-card {
+  pointer-events: auto;
+  align-self: flex-start;
   max-width: min(460px, calc(100vw - 36px));
   padding: 13px 15px;
   color: #eef7f4;
@@ -174,6 +177,83 @@ aside {
   border-radius: 7px;
   box-shadow: 0 14px 34px rgba(0, 0, 0, .22);
   backdrop-filter: blur(8px);
+}
+
+.hud-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+
+.hud-card-head h2 {
+  margin: 0;
+  font-size: 16px;
+  color: #f4fbf7;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, .22);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-toggle-btn {
+  min-height: 24px;
+  height: 24px;
+  width: 24px;
+  min-width: 24px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: bold;
+  line-height: 1;
+  border-radius: 5px;
+  color: #eef7f4;
+  background: rgba(255, 255, 255, .16);
+  border: 1px solid rgba(255, 255, 255, .28);
+  cursor: pointer;
+  transition: all .2s ease;
+  pointer-events: auto;
+  flex-shrink: 0;
+}
+
+.hud-toggle-btn:hover {
+  background: rgba(255, 255, 255, .32);
+  border-color: rgba(255, 255, 255, .55);
+}
+
+.hud-card.collapsed > *:not(.hud-card-head) {
+  display: none !important;
+}
+
+.hud-card.collapsed {
+  padding: 10px 14px;
+  height: auto;
+  min-height: 0;
+}
+
+.student-monitor.collapsed > *:not(.student-monitor-head) {
+  display: none !important;
+}
+
+.student-monitor.collapsed {
+  padding: 10px 14px;
+  height: auto;
+  min-height: 0;
+}
+
+.student-monitor .hud-toggle-btn {
+  color: #172033;
+  background: rgba(23, 32, 51, .08);
+  border: 1px solid rgba(23, 32, 51, .16);
+}
+
+.student-monitor .hud-toggle-btn:hover {
+  background: rgba(23, 32, 51, .16);
+  border-color: rgba(23, 32, 51, .3);
 }
 
 .hud-card h2 {
@@ -225,6 +305,7 @@ aside {
 }
 
 .hud-events {
+  align-self: flex-start;
   width: min(360px, 34vw);
   display: grid;
   gap: 7px;
@@ -1358,6 +1439,7 @@ body.admin-mode .admin-only {
 }
 .paper-top, .right-actions, .paper-tabs { display: flex; align-items: center; gap: 8px; }
 .paper-top { justify-content: space-between; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+button:disabled, button[disabled], .right-actions button:disabled, .right-actions button[disabled] { opacity: 0.35 !important; cursor: not-allowed !important; pointer-events: none !important; border-color: #cbd5e1 !important; color: #94a3b8 !important; background: #e2e8f0 !important; box-shadow: none !important; }
 .paper-kicker { margin-top: 25px; color: #718097; font-size: 11px; font-weight: 700; letter-spacing: .12em; }
 .paper-name { margin: 3px 0 0; font: 700 clamp(28px, 5vw, 48px)/1.1 Georgia, "Songti SC", serif; }
 .paper-date, .paper-load-status, .paper-byline { color: #718097; font-size: 12px; }

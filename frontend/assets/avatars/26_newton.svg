@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+  <rect width="160" height="160" rx="28" fill="#A9CCE3"/>
+  <circle cx="80" cy="66" r="34" fill="#F5CBA7"/>
+  <path d="M48 62 C50 28 110 24 114 62 C104 42 58 42 48 62 Z" fill="#D5D8DC"/>
+  <circle cx="67" cy="68" r="4" fill="#1F2937"/>
+  <circle cx="93" cy="68" r="4" fill="#1F2937"/>
+  <path d="M70 83 Q80 91 91 83" stroke="#8B3A3A" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <path d="M45 154 C48 112 112 112 115 154 Z" fill="#1B4F72"/>
+  
+          <!-- 17th C Wig Hair -->
+          <path d="M42 45 C30 65 38 100 48 112 M118 45 C130 65 122 100 112 112" stroke="#D5D8DC" stroke-width="12" stroke-linecap="round" fill="none"/>
+          <!-- Prism Triangle Icon -->
+          <polygon points="120,25 132,45 108,45" fill="none" stroke="#F1C40F" stroke-width="3"/>
+          <line x1="120" y1="35" x2="140" y2="30" stroke="#E74C3C" stroke-width="2"/>
+        
+</svg>

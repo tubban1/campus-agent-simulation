@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+  <rect width="160" height="160" rx="28" fill="#C4D8C4"/>
+  <circle cx="80" cy="66" r="34" fill="#F5D0A9"/>
+  <path d="M48 62 C50 28 110 24 114 62 C104 42 58 42 48 62 Z" fill="#1F1F1F"/>
+  <circle cx="67" cy="68" r="4" fill="#1F2937"/>
+  <circle cx="93" cy="68" r="4" fill="#1F2937"/>
+  <path d="M70 83 Q80 91 91 83" stroke="#8B3A3A" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <path d="M45 154 C48 112 112 112 115 154 Z" fill="#2A3A40"/>
+  
+          <!-- Topknot / Crown -->
+          <rect x="70" y="24" width="20" height="16" rx="4" fill="#1F1F1F"/>
+          <path d="M66 40 L94 40 L90 48 L70 48 Z" fill="#D4AC0D"/>
+          <!-- Gown Collar -->
+          <path d="M55 118 L80 140 L105 118" stroke="#D4AC0D" stroke-width="4" fill="none"/>
+          <!-- Beard -->
+          <path d="M65 82 Q80 115 95 82 Q80 100 65 82" fill="#808B96"/>
+        
+</svg>

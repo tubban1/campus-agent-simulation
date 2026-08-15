@@ -3,8 +3,8 @@
  * Orchestrates the 2D geographic map, Agent state polling, life-course viewer, newspaper, and admin runtime UI.
  */
 import { ApiClient } from "./api-client.js?v=20260811-profile-timeoutfix";
-import { $, colors, avatarFiles, defaultSpaces, WorldStore, escapeHtml } from "./spatial/world-store.js";
-import { initOrUpdateMapLibreMap, getMapLibreInstance } from "./spatial/maplibre-map.js?v=20260814-fix3-continuity";
+import { $, colors, avatarFiles, defaultSpaces, WorldStore, escapeHtml } from "./spatial/world-store.js?v=20260814-png-avatars";
+import { initOrUpdateMapLibreMap, getMapLibreInstance, resolveCoordinates, refreshMapLibreMarkers } from "./spatial/maplibre-map.js?v=20260815-sync-v16";
 import {
   initThreeScene,
   resizeProfile,
@@ -130,7 +130,7 @@ function requestSpatialViewport(nextViewport, fitCamera = false) {
 }
 
 window.requestSpatialViewportAtMetric = requestViewportAtMetric;
-window.requestSpatialViewportAtLngLat = function(lng, lat, zoom) {
+window.requestSpatialViewportAtLngLat = function (lng, lat, zoom) {
   const scene = WorldStore.spatialScene;
   const metric = scene?.bounds;
   const geographic = scene?.wgs84_bounds;
@@ -142,7 +142,7 @@ window.requestSpatialViewportAtLngLat = function(lng, lat, zoom) {
   requestViewportAtMetric(x, z, { zoom });
 };
 
-window.requestSpatialViewportForMapBounds = function(bounds, zoom) {
+window.requestSpatialViewportForMapBounds = function (bounds, zoom) {
   const scene = WorldStore.spatialScene;
   const metric = scene?.bounds;
   const geographic = scene?.wgs84_bounds;
@@ -164,7 +164,7 @@ window.requestSpatialViewportForMapBounds = function(bounds, zoom) {
   requestSpatialViewport(clampViewport(centerX, centerZ, span));
 };
 
-window.selectNodeDestination = async function(nodeId) {
+window.selectNodeDestination = async function (nodeId) {
   const activeAgent = selectedAgent || (WorldStore.selected !== null && WorldStore.selected !== undefined && WorldStore.agents[WorldStore.selected] ? WorldStore.agents[WorldStore.selected] : null);
   if (!activeAgent) {
     showToast("请先在居民列表或地图上点击选择一名要调度的 Agent");
@@ -192,19 +192,33 @@ window.selectNodeDestination = async function(nodeId) {
   }
 };
 
-window.focusAgentOnMap = function(agentId) {
-  const agent = (WorldStore.agents || []).find(a => Number(a.id) === Number(agentId));
+window.focusAgentOnMap = function (agentId) {
+  const numId = Number(agentId);
+  const agent = (WorldStore.agents || []).find(a => Number(a.id) === numId);
   if (agent) {
     selectedAgent = agent;
-    const index = WorldStore.agents.findIndex(a => Number(a.id) === Number(agentId));
+    const index = WorldStore.agents.findIndex(a => Number(a.id) === numId);
     if (index >= 0) openProfile(index);
-    const spatialState = WorldStore.spatialAgents.get(Number(agentId));
-    if (spatialState) requestViewportAtMetric(spatialState.x, spatialState.z, { fitCamera: true });
+    const spatialState = (WorldStore.spatialAgents && WorldStore.spatialAgents.get(numId))
+      || (WorldStore.spatialAgents && Array.from(WorldStore.spatialAgents.values()).find(s => Number(s.resident_id) === numId));
+
+    if (spatialState) {
+      requestViewportAtMetric(spatialState.x, spatialState.z, { fitCamera: true });
+      const maplibre = getMapLibreInstance();
+      if (maplibre) {
+        const originLon = Number(WorldStore.spatialScene?.origin_lon || 116.3221954);
+        const originLat = Number(WorldStore.spatialScene?.origin_lat || 40.0023657);
+        const coords = resolveCoordinates(spatialState, originLon, originLat);
+        if (coords) {
+          maplibre.flyTo({ center: coords, zoom: 17, duration: 800 });
+        }
+      }
+    }
     showToast(`已锁定并放大观察 Agent: ${agent.name}`);
   }
 };
 
-window.triggerMapEventAt = async function(lon, lat) {
+window.triggerMapEventAt = async function (lon, lat) {
   try {
     const res = await fetch("/api/spatial/events", {
       method: "POST",
@@ -241,7 +255,7 @@ async function loadSpatialWorlds() {
     spatialWorlds = payload.worlds || [];
     const urlParamWorld = new URLSearchParams(window.location.search).get("world_key");
     const activeWorldObj = spatialWorlds.find(w => w.world_key === currentWorldKey && (w.node_count || 0) > 0);
-    if (!urlParamWorld && (!activeWorldObj || currentWorldKey === "default")) {
+    if (!urlParamWorld && (!activeWorldObj || currentWorldKey === "default" || currentWorldKey.includes("legacy"))) {
       const targetWorld = spatialWorlds.find(w => w.world_key === "tsinghua_main") || spatialWorlds.find(w => w.is_real_world && (w.node_count || 0) > 0) || spatialWorlds.find(w => (w.node_count || 0) > 0);
       if (targetWorld) {
         currentWorldKey = targetWorld.world_key;
@@ -518,9 +532,14 @@ async function loadNewsPosts(day = null) {
     const payload = await response.json();
     if (requestId !== WorldStore.newspaperRequestId) return;
     WorldStore.newsPosts = payload.posts || [];
-    WorldStore.newspaperDay = payload.day || day || WorldStore.world?.current_day || 1;
+    WorldStore.newspaperDay = payload.day || 1;
     WorldStore.newspaperEdition = payload.edition || {};
-    WorldStore.newspaperArchive = { available_days: payload.available_days || [], previous_day: payload.previous_day, next_day: payload.next_day, current_day: payload.current_day };
+    WorldStore.newspaperArchive = {
+      available_days: payload.available_days || [],
+      previous_day: payload.previous_day,
+      next_day: payload.next_day,
+      current_day: payload.current_day
+    };
     renderActivities();
     renderNewspaper();
     setPaperLoading(false, `${WorldStore.newspaperEdition.label || `第 ${WorldStore.newspaperDay} 天日报`}已载入`);
@@ -554,6 +573,7 @@ async function loadObserverState() {
       renderSpaces();
       renderList();
       renderObserverHud();
+      refreshMapLibreMarkers();
       if ($("status")) $("status").textContent = "观察世界已接入";
     } else {
       const statusText = obsResponse ? `HTTP ${obsResponse.status}` : "无响应";
@@ -702,9 +722,9 @@ function renderCampusMap() {
         <small>${escapeHtml(spatialNodeKind(node))} · ${humanSpatialStatus(node.status)} · 容量 ${capacity || "未标注"}</small>
         <small class="map-real-place">${node.hasAgent ? "● Agent 当前在此" : "真实坐标"} · 在场 Agent ${residents.length}</small>
         <div class="map-agent-row">${residents.length ? residents.slice(0, 8).map((agent, index) => {
-          const avatar = avatarFiles[(Number(agent.id || index + 1) - 1 + avatarFiles.length) % avatarFiles.length];
-          return `<button class="map-agent" data-agent-id="${agent.id}" title="${escapeHtml(agent.name || "Agent")} · ${escapeHtml(node.name)}"><img src="/avatars/${avatar}" alt="${escapeHtml(agent.name || "Agent")}"></button>`;
-        }).join("") : "<small>暂无 Agent</small>"}</div>
+        const avatar = avatarFiles[(Number(agent.id || index + 1) - 1 + avatarFiles.length) % avatarFiles.length];
+        return `<button class="map-agent" data-agent-id="${agent.id}" title="${escapeHtml(agent.name || "Agent")} · ${escapeHtml(node.name)}"><img src="/avatars/${avatar}" alt="${escapeHtml(agent.name || "Agent")}"></button>`;
+      }).join("") : "<small>暂无 Agent</small>"}</div>
       </section>`;
     }).join("");
     map.querySelectorAll(".map-agent").forEach(button => button.onclick = event => {
@@ -764,9 +784,9 @@ function renderCampusMap() {
       <small>${escapeHtml(space.effective_status || space.status || "运行中")} · 拥挤度 ${level}% · 在场 Agent ${residents.length}</small>
       ${activePlace && activePlace !== (space.name || space.location) ? `<small class="map-real-place">真实地点：${escapeHtml(activePlace)}</small>` : ""}
       <div class="map-agent-row">${residents.length ? residents.slice(0, 8).map((agent, index) => {
-        const avatar = avatarFiles[(Number(agent.id || index + 1) - 1 + avatarFiles.length) % avatarFiles.length];
-        return `<button class="map-agent" data-agent-id="${agent.id}" title="${escapeHtml(agent.name || "Agent")} · ${escapeHtml(locationFor(agent))}"><img src="/avatars/${avatar}" alt="${escapeHtml(agent.name || "Agent")}"></button>`;
-      }).join("") : "<small>暂无 Agent</small>"}</div>
+      const avatar = avatarFiles[(Number(agent.id || index + 1) - 1 + avatarFiles.length) % avatarFiles.length];
+      return `<button class="map-agent" data-agent-id="${agent.id}" title="${escapeHtml(agent.name || "Agent")} · ${escapeHtml(locationFor(agent))}"><img src="/avatars/${avatar}" alt="${escapeHtml(agent.name || "Agent")}"></button>`;
+    }).join("") : "<small>暂无 Agent</small>"}</div>
     </section>`;
   }).join("") || '<div class="empty">暂无校园空间数据。</div>';
 
@@ -802,6 +822,9 @@ function renderActivities() {
 }
 
 function articleMeta(post) {
+  if (post.is_empty_fallback) {
+    return { agent: {}, location: "校园", section: post.section || "编辑部公告", headline: post.headline || "校园日常观察中" };
+  }
   const agent = WorldStore.agents.find(item => Number(item.id) === Number(post.resident_id)) || {};
   const text = `${post.headline || ""} ${post.content || ""}`;
   const location = agent.location || (/图书馆/.test(text) ? "图书馆" : /食堂|套餐|餐/.test(text) ? "食堂" : /实验|项目|代码/.test(text) ? "教学科研区" : "校园");
@@ -853,8 +876,18 @@ function setNewspaperView(view) {
 
 function renderNewspaper() {
   const day = WorldStore.newspaperDay || WorldStore.world?.current_day || "—";
-  const emptyPost = { name: "校园编辑部", role: "编辑部", content: "今天暂未出现达到发布标准的特别发现。编辑部仍在观察行动偏移、关系变化、异常信号和群体涌现。", resident_id: 1, news_value: 0 };
-  const posts = WorldStore.newsPosts.length ? WorldStore.newsPosts : [emptyPost];
+  const hasPosts = WorldStore.newsPosts && WorldStore.newsPosts.length > 0;
+  const emptyPost = {
+    name: "校园编辑部",
+    role: "编辑部",
+    headline: "校园日常观察中",
+    section: "编辑部公告",
+    content: "今天暂未出现达到发布标准的特别发现。编辑部仍在观察行动偏移、关系变化、异常信号和群体涌现。",
+    resident_id: 1,
+    news_value: 0,
+    is_empty_fallback: true
+  };
+  const posts = hasPosts ? WorldStore.newsPosts : [emptyPost];
   const ranked = [...posts].sort((a, b) => newsPriority(b) - newsPriority(a));
   const hero = ranked[0];
   const columns = ranked.slice(1, 7);
@@ -874,10 +907,17 @@ function renderNewspaper() {
 
   const brief = `<section class="paper-brief"><div><span>${isToday ? "今日天气" : "归档日期"}</span><strong>${isToday ? `${env.weather || "校园天气"} ${env.temperature ?? "--"}°C` : `第 ${day} 天`}</strong></div><div><span>${isToday ? "校园人流" : "期刊状态"}</span><strong>${isToday ? `${env.campus_flow ?? "--"}/100` : "已归档"}</strong></div><div><span>${isToday ? "开放空间" : "出版逻辑"}</span><strong>${isToday ? `${openSpaces}/${spaces.length}` : "每日一期"}</strong></div><div><span>分时快讯</span><strong>${WorldStore.newsPosts.length} 条</strong></div></section>`;
 
+  const heroByline = hero.is_empty_fallback
+    ? `runtime 编辑部发布 · 今日滚动观察`
+    : `runtime 编辑部 · 线索来源：${hero.name}（${hero.role || "校园居民"}）${hero.source_slot ? ` · ${paperTimeLabel(hero)}` : ""}`;
+
   if (WorldStore.newspaperView === "flashes") {
     $("newspaperContent").innerHTML = brief + `<section class="paper-flashes">${chronological.map(post => `<article class="paper-flash" data-agent-id="${post.resident_id}"><time>${paperTimeLabel(post)}</time><div><span class="paper-label">${articleMeta(post).section}</span><h3>${postTitle(post)}</h3><p>${newsBody(post)}</p><p class="paper-byline">线索来源：${post.name}（${post.role || "校园居民"}）</p></div></article>`).join("") || '<div class="empty">本日尚无分时快讯。runtime 会在每个已完成的 8 小时窗口后评估是否有值得发布的新发现。</div>'}</section>`;
   } else {
-    $("newspaperContent").innerHTML = brief + `<section class="paper-hero"><img src="/avatars/${avatarFor(hero)}" alt="${hero.name}的卡通形象"><div><span class="paper-label">头条 · ${articleMeta(hero).section}</span><h2>${postTitle(hero)}</h2><p>${newsBody(hero)}</p><p class="paper-byline">runtime 编辑部 · 线索来源：${hero.name}（${hero.role || "校园居民"}）${hero.source_slot ? ` · ${paperTimeLabel(hero)}` : ""}</p></div></section><section class="paper-columns">${columns.map(post => `<article class="paper-story" data-agent-id="${post.resident_id}"><img src="/avatars/${avatarFor(post)}" alt="${post.name}"><span class="paper-label">${articleMeta(post).section}</span><h3>${postTitle(post)}</h3><p>${newsBody(post)}</p><p class="paper-byline">${paperTimeLabel(post)} · 线索来源：${post.name}</p></article>`).join("") || '<div class="empty">本期暂时只有一条入选报道，新的快讯会继续汇入今日滚动版。</div>'}</section>`;
+    const emptyNotice = hasPosts
+      ? '<div class="empty">本期暂时只有一条入选报道，新的快讯会继续汇入今日滚动版。</div>'
+      : '<div class="empty">本日暂无分时快讯，新的快讯将随世界 tick 推进自动汇入今日滚动版。</div>';
+    $("newspaperContent").innerHTML = brief + `<section class="paper-hero"><img src="/avatars/${avatarFor(hero)}" alt="${hero.name}的卡通形象"><div><span class="paper-label">头条 · ${articleMeta(hero).section}</span><h2>${postTitle(hero)}</h2><p>${newsBody(hero)}</p><p class="paper-byline">${heroByline}</p></div></section><section class="paper-columns">${columns.map(post => `<article class="paper-story" data-agent-id="${post.resident_id}"><img src="/avatars/${avatarFor(post)}" alt="${post.name}"><span class="paper-label">${articleMeta(post).section}</span><h3>${postTitle(post)}</h3><p>${newsBody(post)}</p><p class="paper-byline">${paperTimeLabel(post)} · 线索来源：${post.name}</p></article>`).join("") || emptyNotice}</section>`;
   }
   document.querySelectorAll(".paper-story,.paper-flash").forEach(card => card.onclick = () => openPostProfile({ resident_id: card.dataset.agentId }));
 }
@@ -987,15 +1027,22 @@ function renderList() {
     b.className = "agent";
     const avatar = avatarFiles[(Number(a.id || i + 1) - 1 + avatarFiles.length) % avatarFiles.length];
     b.innerHTML = `<img class="avatar-photo" src="/avatars/${avatar}" alt="${a.name || "Agent"}的卡通形象"><span><span class="agent-name">${a.name || "未命名"}</span><span class="agent-meta">${a.role || "校园居民"}${bodyAlertLabel(a)}<br>${movementLabel(a)}</span></span>`;
-    b.onclick = () => openProfile(i);
+    b.onclick = () => window.focusAgentOnMap(a.id);
     list.append(b);
   });
-  if ($("agentCount")) $("agentCount").textContent = `${WorldStore.agents.length} 位 Agent 正在校园中生活`;
+  if ($("agentCount")) $("agentCount").textContent = `${WorldStore.agents.length} 位 Agent 正在 World2 中运转`;
 }
 
 function renderEnvironment() {
   const e = WorldStore.world.environment || WorldStore.world.campus_state || {};
-  const entries = [["天气", `${e.weather || "校园天气"} ${e.temperature ?? ""}°C`], ["校园时间", e.real_time || e.time_slot || "模拟运行中"], ["考试压力", `${e.exam_pressure ?? "--"}/100`], ["校园人流", `${e.campus_flow ?? "--"}/100`], ["校园情绪", e.campus_mood || "平稳"], ["活动热度", `${e.activity_heat ?? "--"}/100`]];
+  const entries = [
+    ["环境天气", `${e.weather || "维度天气"} ${e.temperature ?? ""}°C`],
+    ["维度时间", e.real_time || e.time_slot || "维度运行中"],
+    ["生态压力", `${e.exam_pressure ?? "--"}/100`],
+    ["Sector 人流", `${e.campus_flow ?? "--"}/100`],
+    ["维度氛围", e.campus_mood || "平稳"],
+    ["事件热度", `${e.activity_heat ?? "--"}/100`]
+  ];
   if ($("environment")) {
     $("environment").innerHTML = entries.map(([k, v]) => `<div class="env"><span>${k}</span><strong>${v}</strong></div>`).join("");
   }
@@ -1014,7 +1061,7 @@ function renderGeoSummary() {
   const coordinateLabel = Array.isArray(bounds) && bounds.length === 4
     ? `${Number(bounds[0]).toFixed(4)}, ${Number(bounds[1]).toFixed(4)} → ${Number(bounds[2]).toFixed(4)}, ${Number(bounds[3]).toFixed(4)}`
     : "等待 WGS84 坐标范围";
-  box.innerHTML = `<div class="geo-row"><span>地图</span><strong>${escapeHtml(world.name || currentWorldKey || "校园空间")}</strong></div><div class="geo-row"><span>坐标系</span><strong>WGS84 + 本地米制</strong></div><div class="geo-row"><span>地理范围</span><strong>${escapeHtml(coordinateLabel)}</strong></div><div class="geo-row"><span>当前窗口</span><strong>${buildings} 建筑 · ${agents} Agent</strong></div>`;
+  box.innerHTML = `<div class="geo-row"><span>Sector 空间</span><strong>${escapeHtml(world.name || currentWorldKey || "World2 维度")}</strong></div><div class="geo-row"><span>坐标系</span><strong>WGS84 + 本地米制</strong></div><div class="geo-row"><span>地理范围</span><strong>${escapeHtml(coordinateLabel)}</strong></div><div class="geo-row"><span>当前窗口</span><strong>${buildings} 设施节点 · ${agents} Agent</strong></div>`;
 }
 
 function renderWorldPulse() {
@@ -1029,7 +1076,7 @@ function renderWorldPulse() {
   const spaces = (WorldStore.world.spaces || {}).spaces || [];
   const activeSpaces = spaces.filter(space => (space.effective_status || space.status) === "开放").length;
   const eventCount = (WorldStore.world.events || []).length;
-  pulse.innerHTML = [["活跃居民", WorldStore.agents.length, "正在自主生活"], ["开放空间", `${activeSpaces}/${spaces.length}`, "校园可达区域"], ["今日事件", eventCount, "环境与行动记录"], ["世界温度", `${e.temperature ?? "--"}°C`, e.weather || "模拟环境"]].map(([label, value, note]) => `<div class="pulse-item"><span class="pulse-label"><i></i>${label}</span><strong class="pulse-value">${value}</strong><span class="pulse-note">${note}</span></div>`).join("");
+  pulse.innerHTML = [["World2 居民", WorldStore.agents.length, "正在维度中自主运转"], ["开放 Sector", `${activeSpaces}/${spaces.length}`, "维度可达区域"], ["今日事件", eventCount, "环境与行动记录"], ["维度温度", `${e.temperature ?? "--"}°C`, e.weather || "模拟环境"]].map(([label, value, note]) => `<div class="pulse-item"><span class="pulse-label"><i></i>${label}</span><strong class="pulse-value">${value}</strong><span class="pulse-note">${note}</span></div>`).join("");
 }
 
 function currentWorldClock() {
@@ -1112,30 +1159,41 @@ function agentActivityStatus(agent) {
   const nightStates = {
     deep_sleep: ["熟睡中", "#5f6fa8"],
     light_sleep: ["浅眠 / 微觉醒", "#8a77bd"],
-    night_activity: ["夜间活动", "#d99445"],
+    night_activity: ["夜视巡察", "#d99445"],
     night_shift: ["夜班中", "#b76a45"],
     insomnia_discomfort: ["失眠 / 不适", "#d45d75"],
   };
   if (nightStates[sleepState]) return nightStates[sleepState];
   const hour = currentWorldClock().getHours();
   if (hour < 6 && isResidentialLocation(agent.location)) return ["熟睡中", "#5f6fa8"];
+
   if (["chat", "collaborate", "club_activity", "conflict"].includes(action)) return ["交互中", "#e85d75"];
   if (["reflect", "observe"].includes(action)) return ["思考中", "#6aa7d8"];
-  if (["move", "consume", "rest", "queue", "attend_class"].includes(action)) return ["探索中", "#4f8b58"];
-  return ["探索中", "#4f8b58"];
+  if (action === "attend_class") return ["研学中", "#3498db"];
+  if (action === "consume") return ["补充中", "#e67e22"];
+  if (action === "rest") return ["休息中", "#8a77bd"];
+  if (action === "move") return ["移动中", "#2ecc71"];
+  if (action === "queue") return ["排队中", "#d35400"];
+
+  const loc = (agent.location || "").toLowerCase();
+  if (loc.includes("图") || loc.includes("教") || loc.includes("实验") || loc.includes("主楼")) return ["研学中", "#3498db"];
+  if (loc.includes("食") || loc.includes("餐") || loc.includes("清芬") || loc.includes("紫荆园") || loc.includes("听涛")) return ["补充中", "#e67e22"];
+  if (loc.includes("宿") || loc.includes("公寓") || loc.includes("寝室")) return ["休息中", "#8a77bd"];
+
+  return ["巡访中", "#27ae60"];
 }
 
 function actionPhrase(agent, event) {
-  const action = event?.payload?.action || "", location = event?.location || agent.location || "校园";
+  const action = event?.payload?.action || "", location = event?.location || agent.location || "Sector 节点";
   const deferred = event?.payload?.runtime_decision?.deferred_action;
-  if (action === "move") return deferred ? `前往${location}，准备${deferred === "consume" ? "吃饭" : deferred === "rest" ? "休息" : "执行计划"}` : `前往${location}`;
-  if (action === "consume") return `在${location}补充食物`;
+  if (action === "move") return deferred ? `前往${location}，准备${deferred === "consume" ? "用餐" : deferred === "rest" ? "休息" : deferred === "attend_class" ? "研学" : "执行计划"}` : `前往${location}`;
+  if (action === "consume") return `在${location}补充能量`;
   if (action === "rest") return `在${location}休息恢复`;
   if (action === "queue") return `在${location}排队等待`;
-  if (action === "attend_class") return `在${location}上课`;
-  if (action === "chat") return `在${location}轻量交流`;
-  if (action === "collaborate") return `在${location}协作`;
-  if (action === "reflect") return `在${location}整理状态`;
+  if (action === "attend_class") return `在${location}研学`;
+  if (action === "chat") return `在${location}交流`;
+  if (action === "collaborate") return `在${location}维度协作`;
+  if (action === "reflect") return `在${location}状态思考`;
   if (action === "observe") return `观察${location}`;
   return location;
 }
@@ -1148,7 +1206,7 @@ function bodyRiskScore(agent) {
 
 function bodyRiskLabel(agent) {
   const body = WorldStore.bodyStates.get(Number(agent.id)) || {};
-  if (!Object.keys(body).length) return bodyAlertLabel(agent).replace(/^ · /, "") || agent.role || "校园居民";
+  if (!Object.keys(body).length) return bodyAlertLabel(agent).replace(/^ · /, "") || agent.role || "World2 居民";
   const risks = [];
   if (Number(body.hunger || 0) >= 75) risks.push("饥饿");
   if (Number(body.fatigue || 0) >= 75) risks.push("疲劳");
@@ -1163,21 +1221,43 @@ function monitorProgress(agent) {
   return Math.max(8, Math.min(100, Math.round(bodyRiskScore(agent))));
 }
 
+let isHudCardCollapsed = false;
+let isMonitorCollapsed = false;
+
 function renderStudentMonitor() {
-  const counts = { "探索中": 0, "思考中": 0, "休息中": 0, "交互中": 0 };
-  WorldStore.agents.forEach(agent => { const [label] = agentActivityStatus(agent); counts[label] = (counts[label] || 0) + 1; });
+  const counts = {};
+  WorldStore.agents.forEach(agent => {
+    const [label] = agentActivityStatus(agent);
+    counts[label] = (counts[label] || 0) + 1;
+  });
   const focusAgents = [...WorldStore.agents].sort((a, b) => bodyRiskScore(b) - bodyRiskScore(a)).slice(0, 4);
   const worldTime = formatWorldClock(true);
-  const quietLabel = counts["休息中"] ? "休息中" : "思考中";
-  const quietColor = counts["休息中"] ? "#8a77bd" : "#6aa7d8";
-  const quietCount = counts[quietLabel] || 0;
-  return `<section class="student-monitor"><div class="student-monitor-head"><h3>学生状态监控</h3><span class="monitor-time">${escapeHtml(WorldStore.observedFocus)} · ${worldTime}</span></div><div class="monitor-stats"><div class="monitor-stat" style="--stat-color:#4f8b58"><strong>${counts["探索中"] || 0}</strong><span>探索中</span></div><div class="monitor-stat" style="--stat-color:${quietColor}"><strong>${quietCount}</strong><span>${quietLabel}</span></div><div class="monitor-stat" style="--stat-color:#e85d75"><strong>${counts["交互中"] || 0}</strong><span>交互中</span></div></div><div class="monitor-list">${focusAgents.map(agent => { const [statusLabel, color] = agentActivityStatus(agent), progress = monitorProgress(agent), event = latestAgentEvent(agent), target = actionPhrase(agent, event), risk = bodyRiskLabel(agent); return `<button class="monitor-row" style="--row-color:${color}" data-agent-id="${agent.id}"><span><strong>${escapeHtml(agent.name || "Agent")}</strong><small>${escapeHtml(target)} · ${escapeHtml(risk)}</small><span class="monitor-progress" style="--value:${progress}%"><i></i></span></span><b class="monitor-badge">${statusLabel}</b></button>`; }).join("") || '<div class="empty">等待 Agent 状态。</div>'}</div></section>`;
+
+  const mobileCount = (counts["移动中"] || 0) + (counts["巡访中"] || 0);
+  const studyCount = (counts["研学中"] || 0) + (counts["工作中"] || 0);
+  const restCount = (counts["休息中"] || 0) + (counts["补充中"] || 0) + (counts["熟睡中"] || 0) + (counts["排队中"] || 0);
+  const interactCount = (counts["交互中"] || 0) + (counts["思考中"] || 0);
+
+  const collapsedClass = isMonitorCollapsed ? " collapsed" : "";
+  const toggleBtnChar = isMonitorCollapsed ? "+" : "−";
+  return `<section class="student-monitor${collapsedClass}" id="studentMonitor"><div class="student-monitor-head"><h3>World2 居民状态监控</h3><div style="display:flex;align-items:center;gap:8px"><span class="monitor-time">${escapeHtml(WorldStore.observedFocus)} · ${worldTime}</span><button class="hud-toggle-btn" id="toggleMonitor" type="button" title="折叠/展开监控面板" aria-label="折叠/展开监控面板">${toggleBtnChar}</button></div></div><div class="monitor-stats"><div class="monitor-stat" style="--stat-color:#2ecc71"><strong>${mobileCount}</strong><span>巡访移动</span></div><div class="monitor-stat" style="--stat-color:#3498db"><strong>${studyCount}</strong><span>研学服务</span></div><div class="monitor-stat" style="--stat-color:#8a77bd"><strong>${restCount}</strong><span>休息补充</span></div><div class="monitor-stat" style="--stat-color:#e85d75"><strong>${interactCount}</strong><span>交互思考</span></div></div><div class="monitor-list">${focusAgents.map(agent => { const [statusLabel, color] = agentActivityStatus(agent), progress = monitorProgress(agent), event = latestAgentEvent(agent), target = actionPhrase(agent, event), risk = bodyRiskLabel(agent); return `<button class="monitor-row" style="--row-color:${color}" data-agent-id="${agent.id}"><span><strong>${escapeHtml(agent.name || "Agent")}</strong><small>${escapeHtml(target)} · ${escapeHtml(risk)}</small><span class="monitor-progress" style="--value:${progress}%"><i></i></span></span><b class="monitor-badge">${statusLabel}</b></button>`; }).join("") || '<div class="empty">等待 Agent 状态。</div>'}</div></section>`;
 }
 
 function bindStudentMonitor() {
+  const toggleBtn = $("toggleMonitor");
+  if (toggleBtn) {
+    toggleBtn.onclick = (e) => {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      isMonitorCollapsed = !isMonitorCollapsed;
+      const monitorEl = $("studentMonitor");
+      if (monitorEl) {
+        monitorEl.classList.toggle("collapsed", isMonitorCollapsed);
+        toggleBtn.textContent = isMonitorCollapsed ? "+" : "−";
+      }
+    };
+  }
   document.querySelectorAll(".monitor-row[data-agent-id]").forEach(row => row.onclick = () => {
-    const index = WorldStore.agents.findIndex(agent => Number(agent.id) === Number(row.dataset.agentId));
-    if (index >= 0) openProfile(index);
+    window.focusAgentOnMap(row.dataset.agentId);
   });
 }
 
@@ -1185,6 +1265,24 @@ function renderObserverHud() {
   const e = WorldStore.world?.environment || {}, runtime = WorldStore.worldRuntime || {}, status = runtime.status === "running" ? "维度的律动中" : "维度冻结", worldTime = formatWorldClock(true), worldDate = currentWorldClock().toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" });
   const activeWorld = (spatialWorlds || []).find(w => w.world_key === currentWorldKey) || {};
   const boundsLabel = activeWorld.wgs84_bounds ? `WGS84 [${activeWorld.wgs84_bounds.map(v => v.toFixed(3)).join(", ")}]` : "米制仿真";
+
+  const hudCard = $("hudCard") || document.querySelector(".hud-card");
+  if (hudCard) {
+    hudCard.classList.toggle("collapsed", isHudCardCollapsed);
+  }
+  const toggleHudBtn = $("toggleHudCard");
+  if (toggleHudBtn) {
+    toggleHudBtn.textContent = isHudCardCollapsed ? "+" : "−";
+    toggleHudBtn.onclick = (ev) => {
+      if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+      isHudCardCollapsed = !isHudCardCollapsed;
+      if (hudCard) {
+        hudCard.classList.toggle("collapsed", isHudCardCollapsed);
+      }
+      toggleHudBtn.textContent = isHudCardCollapsed ? "+" : "−";
+    };
+  }
+
   if ($("observerCardTitle")) $("observerCardTitle").textContent = activeWorld.name ? `World2 · ${activeWorld.name}` : "World2 · 平行世界观察舱";
   if ($("observerSubtitle")) $("observerSubtitle").textContent = `Sector-01 · ${status} · ${worldDate} ${worldTime} · ${e.weather || "环境气象"} ${e.temperature ?? "--"}°C`;
   if ($("observerMetrics")) {
@@ -1210,7 +1308,7 @@ function ensureRuntimePanel() {
   panel = document.createElement("section");
   panel.id = "runtimePanel";
   panel.className = "runtime-panel";
-  panel.innerHTML = '<div class="runtime-card"><h2>世界运行时</h2><div class="runtime-state"><i id="runtimeDot" class="runtime-dot"></i><span id="runtimeStatus">正在连接</span></div><div class="runtime-meta" id="runtimeMeta">等待 runtime 数据</div><div class="runtime-actions admin-only"><button id="worldStart">启动</button><button id="worldPause">暂停</button><button id="worldTick">推进 tick</button></div></div><div class="runtime-card"><h2>实时事件流</h2><div class="small" style="padding:0 0 8px">仅显示与当前校园生活相关的最新变化</div><div class="event-stream" id="worldEventStream"><div class="empty" style="padding:8px 0">等待世界事件...</div></div></div>';
+  panel.innerHTML = '<div class="runtime-card"><h2>世界运行时</h2><div class="runtime-state"><i id="runtimeDot" class="runtime-dot"></i><span id="runtimeStatus">正在连接</span></div><div class="runtime-meta" id="runtimeMeta">等待 runtime 数据</div><div class="runtime-actions admin-only"><button id="worldStart">启动</button><button id="worldPause">暂停</button><button id="worldTick">推进 tick</button></div></div><div class="runtime-card"><h2>实时事件流</h2><div class="small" style="padding:0 0 8px">仅显示与当前 World2 演化相关的最新变化</div><div class="event-stream" id="worldEventStream"><div class="empty" style="padding:8px 0">等待世界事件...</div></div></div>';
   const pulse = $("worldPulse"), board = document.querySelector(".centerboard");
   if (pulse) pulse.insertAdjacentElement("afterend", panel); else board.insertAdjacentElement("afterbegin", panel);
   if ($("worldStart")) $("worldStart").onclick = () => adminWorldAction("/api/admin/world/start");
@@ -1225,7 +1323,7 @@ function renderWorldRuntime() {
   if ($("runtimeDot")) $("runtimeDot").className = `runtime-dot ${status}`;
   if ($("runtimeStatus")) $("runtimeStatus").textContent = status === "running" ? "后台运行中" : "已暂停";
   if ($("runtimeMeta")) $("runtimeMeta").textContent = `${worldTime} · tick ${runtime.latest_tick?.tick_index ?? "--"} · 自动模型 ${budget.auto_model_calls_used ?? 0}/${budget.daily_auto_model_budget ?? 100}`;
-  if ($("dayLabel")) $("dayLabel").textContent = `${status === "running" ? "运行中" : "已暂停"} · ${(WorldStore.world?.environment || {}).weather || "校园"} · ${worldTime}`;
+  if ($("dayLabel")) $("dayLabel").textContent = `${status === "running" ? "运行中" : "已暂停"} · ${(WorldStore.world?.environment || {}).weather || "维度天气"} · ${worldTime}`;
 }
 
 function renderWorldEvents() {
@@ -1254,9 +1352,12 @@ function renderWorldEvents() {
   box.innerHTML = visible.map(event => {
     const failed = event.event_type === "world_tick_failed";
     const failureDisplay = failed ? worldTickFailureDisplay(event) : null;
-    const title = failureDisplay?.title || event.title || "世界变化";
-    const content = failureDisplay?.content || event.display_content || eventContent(event);
-    return `<div class="event-entry ${failed ? "event-warning" : ""}"><strong>${escapeHtml(title)}${event.repeat_count > 1 ? ` · 重复 ${event.repeat_count} 次` : ""}</strong>${escapeHtml(content)}<span class="progress-meta">${event.slot || ""}${event.location ? ` · ${escapeHtml(event.location)}` : ""}${event.resident_id ? ` · Agent ${event.resident_id}` : ""}${event.display_time ? ` · ${event.display_time}` : event.created_at ? ` · ${formatWorldTimestamp(event.created_at)}` : ""}</span></div>`;
+    const title = failureDisplay ? failureDisplay.title : (event.title || event.event_type || "世界事件");
+    const content = failureDisplay ? failureDisplay.content : (event.display_content || event.content || "");
+    const resident = WorldStore.agents.find(a => Number(a.id) === Number(event.resident_id));
+    const residentName = event.resident_name || resident?.name;
+    const residentTag = residentName ? ` · ${escapeHtml(residentName)}` : (event.resident_id ? ` · Agent ${event.resident_id}` : "");
+    return `<div class="event-entry ${failed ? "event-warning" : ""}"><strong>${escapeHtml(title)}${event.repeat_count > 1 ? ` · 重复 ${event.repeat_count} 次` : ""}</strong>${escapeHtml(content)}<span class="progress-meta">${event.slot || ""}${event.location ? ` · ${escapeHtml(event.location)}` : ""}${residentTag}${event.display_time ? ` · ${event.display_time}` : event.created_at ? ` · ${formatWorldTimestamp(event.created_at)}` : ""}</span></div>`;
   }).join("") || '<div class="empty" style="padding:8px 0">当前没有需要关注的世界变化。</div>';
 }
 
@@ -1578,8 +1679,6 @@ document.addEventListener("DOMContentLoaded", () => {
   if ($("refresh")) $("refresh").onclick = load;
   if ($("detailRefresh")) $("detailRefresh").onclick = load;
   if ($("openNewspaper")) $("openNewspaper").onclick = () => {
-    // Open first so a slow or failed edition request never makes the button
-    // appear unresponsive; the overlay carries its own loading/error status.
     $("newspaperOverlay")?.classList.add("open");
     loadNewsPosts();
   };
@@ -1588,7 +1687,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (event.target === $("newspaperOverlay")) $("newspaperOverlay")?.classList.remove("open");
   };
   if ($("paperPrev")) $("paperPrev").onclick = () => loadNewsPosts(WorldStore.newspaperArchive.previous_day);
-  if ($("paperToday")) $("paperToday").onclick = () => loadNewsPosts(WorldStore.newspaperArchive.current_day || WorldStore.world?.current_day);
+  if ($("paperToday")) $("paperToday").onclick = () => loadNewsPosts();
   if ($("paperNext")) $("paperNext").onclick = () => loadNewsPosts(WorldStore.newspaperArchive.next_day);
   document.querySelectorAll("[data-paper-view]").forEach(button => {
     button.onclick = () => setNewspaperView(button.dataset.paperView);

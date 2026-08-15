@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+  <rect width="160" height="160" rx="28" fill="#FAD7A0"/>
+  <circle cx="80" cy="66" r="34" fill="#F7DC6F"/>
+  <path d="M48 62 C50 28 110 24 114 62 C104 42 58 42 48 62 Z" fill="#4A235A"/>
+  <circle cx="67" cy="68" r="4" fill="#1F2937"/>
+  <circle cx="93" cy="68" r="4" fill="#1F2937"/>
+  <path d="M70 83 Q80 91 91 83" stroke="#8B3A3A" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <path d="M45 154 C48 112 112 112 115 154 Z" fill="#E67E22"/>
+  
+          <!-- Halo -->
+          <circle cx="80" cy="66" r="46" fill="none" stroke="#F1C40F" stroke-width="4" stroke-dasharray="6,4"/>
+          <!-- Ushnisha -->
+          <circle cx="80" cy="30" r="10" fill="#4A235A"/>
+          <!-- Lotus Mark / Urna -->
+          <circle cx="80" cy="56" r="3" fill="#C0392B"/>
+          <!-- Robe Shoulder -->
+          <path d="M45 154 C48 112 112 112 115 154 Z" fill="#E67E22"/>
+          <path d="M45 125 Q70 135 115 120" stroke="#D35400" stroke-width="4" fill="none"/>
+        
+</svg>

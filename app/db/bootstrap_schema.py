@@ -18,6 +18,7 @@ from app.schema import (
     ENV_COLUMN_TYPES,
     EXTERNAL_INFORMATION_SQL,
     PROFILE_COLUMN_TYPES,
+    ROADMAP2_OBSERVER_SQL,
     SPACE_SYSTEM_SQL,
 )
 
@@ -107,3 +108,9 @@ def ensure_external_information_system(conn, *, allow_ddl=False):
     if allow_ddl:
         conn.executescript(EXTERNAL_INFORMATION_SQL)
     ensure_table_columns(conn, "agent_information", AGENT_INFORMATION_COLUMNS, allow_ddl=allow_ddl)
+
+
+def ensure_roadmap2_observer_system(conn, *, allow_ddl=False):
+    if allow_ddl:
+        conn.executescript(ROADMAP2_OBSERVER_SQL)
+    ensure_table_columns(conn, "group_pattern_candidates", {}, allow_ddl=allow_ddl)

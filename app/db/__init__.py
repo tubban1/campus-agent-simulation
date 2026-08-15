@@ -80,6 +80,8 @@ POSTGRES_ID_TABLES = {
     "longitudinal_aggregations", "trajectory_reconciliations",
     "social_interaction_sessions", "social_session_participants",
     "social_session_turns", "spatial_facility_work_orders",
+    "agent_expectations", "continuity_observations", "agent_hypotheses",
+    "group_pattern_candidates",
 }
 
 POSTGRES_TABLE_COLUMNS_CACHE = {}

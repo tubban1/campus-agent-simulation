@@ -56,13 +56,19 @@ def life_course_kind(item):
 def life_course_display_title(item):
     source = item.get("source")
     action = item.get("action")
+    title = item.get("title")
+    name = item.get("resident_name")
+    if title and title not in ("也去食堂", "去食堂吃饭"):
+        return title
+    if name:
+        return f"{name}的{life_course_action_label(action)}"
     if source == "memories":
         return "日记与记忆" if item.get("memory_source") == "diary" else "记忆沉淀"
     if source == "simulation_action_logs":
         return f"{life_course_action_label(action)}路线"
     if source == "world_event_stream":
-        return item.get("title") or f"{life_course_action_label(action)}事件"
-    return item.get("title") or "校园经历"
+        return title if title else f"{life_course_action_label(action)}事件"
+    return title or "校园经历"
 
 def life_course_turning_summary(item):
     reasons = item.get("significance_reasons") or []
@@ -180,7 +186,7 @@ def life_course_timeline(conn, resident_id, from_day=None, to_day=None, limit=24
     branch_key = active_branch(conn)
     events, seen_action_keys, world_event_items, memory_items = [], set(), {}, {}
     row_limit = min(max(int(limit), 20), 500)
-    for row in conn.execute(f"SELECT id, tick_id, day, slot, event_type, resident_id, location, title, content, payload, created_at FROM world_event_stream WHERE {where} AND branch_key = ? AND event_type NOT IN ('observer_session', 'observer_model_detail') ORDER BY day ASC, id ASC LIMIT ?", params + [branch_key, row_limit]).fetchall():
+    for row in conn.execute(f"SELECT e.id, e.tick_id, e.day, e.slot, e.event_type, e.resident_id, e.location, e.title, e.content, e.payload, e.created_at, r.name AS resident_name FROM world_event_stream e LEFT JOIN residents r ON r.id = e.resident_id WHERE {where} AND e.branch_key = ? AND e.event_type NOT IN ('observer_session', 'observer_model_detail') ORDER BY e.day ASC, e.id ASC LIMIT ?", params + [branch_key, row_limit]).fetchall():
         payload = load_json(row["payload"], {})
         action = payload.get("action") or payload.get("runtime_decision", {}).get("action")
         key = (row["day"], str(action or row["event_type"]), row["location"] or "", row["content"] or "")
@@ -188,7 +194,7 @@ def life_course_timeline(conn, resident_id, from_day=None, to_day=None, limit=24
             world_event_items[key]["repeat_count"] += 1
             world_event_items[key]["evidence"].append(life_course_evidence("world_event_stream", row["id"]))
             continue
-        item = {"id": row["id"], "day": row["day"], "slot": row["slot"], "event_type": row["event_type"], "action": action, "title": row["title"], "content": row["content"], "location": row["location"], "created_at": row["created_at"], "source": "world_event_stream", "evidence": [life_course_evidence("world_event_stream", row["id"])], "payload": payload, "success": row["event_type"] not in {"agent_tick_failed", "world_tick_failed"}, "memory_importance": 0, "spread_count": len(payload.get("recipients", [])) if isinstance(payload.get("recipients"), list) else 0, "repeat_count": 1}
+        item = {"id": row["id"], "day": row["day"], "slot": row["slot"], "event_type": row["event_type"], "action": action, "resident_id": row["resident_id"], "resident_name": row["resident_name"], "title": row["title"], "content": row["content"], "location": row["location"], "created_at": row["created_at"], "source": "world_event_stream", "evidence": [life_course_evidence("world_event_stream", row["id"])], "payload": payload, "success": row["event_type"] not in {"agent_tick_failed", "world_tick_failed"}, "memory_importance": 0, "spread_count": len(payload.get("recipients", [])) if isinstance(payload.get("recipients"), list) else 0, "repeat_count": 1}
         world_event_items[key] = item; seen_action_keys.add(key); events.append(score_life_course_event(item))
     for row in conn.execute(f"SELECT id, day, tick_id, perception, retrieved_memories, decision, execution, environment_feedback, state_before, state_after, created_at FROM simulation_action_logs WHERE {where} ORDER BY day ASC, id ASC LIMIT ?", params + [row_limit]).fetchall():
         decision, execution = load_json(row["decision"], {}), load_json(row["execution"], {})

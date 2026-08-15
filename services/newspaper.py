@@ -80,6 +80,22 @@ def write_daily_diaries(conn, day, results=None, replace_existing=False, *, ask_
     return created
 
 
+def audit_candidate_evidence(conn, candidate):
+    """Audit evidence for an news candidate before publication to prevent hallucination."""
+    source_event_id = candidate.get("source_event_id")
+    if source_event_id is not None:
+        ev = conn.execute(
+            "SELECT id FROM world_event_stream WHERE id = ?", (source_event_id,)
+        ).fetchone()
+        if not ev:
+            return {"decision": "reject", "reason": "missing_source_event"}
+
+    if candidate.get("category") == "群体现象" and candidate.get("score", 0) < 50:
+        return {"decision": "hold", "reason": "low_confidence_pattern"}
+
+    return {"decision": "publish", "confidence": candidate.get("score", 50)}
+
+
 def collect_candidates(conn, day, source_slot, limit=60, *, active_branch, load_json, classify):
     branch_key = active_branch(conn); existing = {int(row["resident_id"]) for row in conn.execute("SELECT resident_id FROM agent_news_posts WHERE day = ?", (day,)).fetchall()}; candidates = []
     rows = conn.execute("""SELECT e.id, e.event_type, e.resident_id, e.location, e.title, e.content, e.payload, r.name, r.role FROM world_event_stream e LEFT JOIN residents r ON r.id = e.resident_id WHERE e.day = ? AND e.branch_key = ? AND e.resident_id IS NOT NULL AND e.event_type NOT IN ('world_tick_started', 'world_tick_complete', 'campus_news_published', 'campus_news_skipped', 'observer_session', 'observer_model_detail') ORDER BY e.id DESC LIMIT ?""", (day, branch_key, limit)).fetchall()
@@ -88,14 +104,53 @@ def collect_candidates(conn, day, source_slot, limit=60, *, active_branch, load_
         if resident_id in existing: continue
         payload = load_json(row["payload"], {}); action = payload.get("action") or payload.get("runtime_decision", {}).get("action") or ""; category, score = classify(row["event_type"], action, row["content"], payload)
         if row["event_type"] == "agent_tick" and source_slot and row["content"] and row["location"]: score += 5
-        candidates.append({"resident_id": resident_id, "name": row["name"] or f"Agent {resident_id}", "role": row["role"] or "校园居民", "location": row["location"] or "校园", "event_type": row["event_type"], "title": row["title"], "content": row["content"], "payload": payload, "action": action, "category": category, "score": score, "source_event_id": row["id"]})
+        cand = {"resident_id": resident_id, "name": row["name"] or f"Agent {resident_id}", "role": row["role"] or "校园居民", "location": row["location"] or "校园", "event_type": row["event_type"], "title": row["title"], "content": row["content"], "payload": payload, "action": action, "category": category, "score": score, "source_event_id": row["id"]}
+        if audit_candidate_evidence(conn, cand)["decision"] == "publish":
+            candidates.append(cand)
     relationship_rows = conn.execute("""SELECT c.id, c.from_resident_id, c.to_resident_id, c.interaction, c.reason, c.affinity_before, c.affinity_after, c.trust_before, c.trust_after, c.cooperation_before, c.cooperation_after, c.conflict_before, c.conflict_after, r.name, r.role, r.location, target.name AS target_name FROM relationship_change_events c JOIN residents r ON r.id = c.from_resident_id JOIN residents target ON target.id = c.to_resident_id WHERE c.day = ? ORDER BY c.id DESC LIMIT 40""", (day,)).fetchall()
     for row in relationship_rows:
         resident_id = int(row["from_resident_id"])
         if resident_id in existing: continue
         delta = abs(int(row["trust_after"] or 0) - int(row["trust_before"] or 0)) + abs(int(row["cooperation_after"] or 0) - int(row["cooperation_before"] or 0)) + abs(int(row["conflict_after"] or 0) - int(row["conflict_before"] or 0))
         content = f"{row['name']}与{row['target_name']}的关系发生变化：{row['reason'] or row['interaction']}。"
-        candidates.append({"resident_id": resident_id, "name": row["name"], "role": row["role"], "location": row["location"] or "校园", "event_type": "relationship_change", "title": "关系变化被记录", "content": content, "payload": {"relationship_change_event_id": row["id"], "target_name": row["target_name"]}, "action": row["interaction"], "category": "关系风向", "score": 86 + min(delta, 20), "source_event_id": None})
+        cand = {"resident_id": resident_id, "name": row["name"], "role": row["role"], "location": row["location"] or "校园", "event_type": "relationship_change", "title": "关系变化被记录", "content": content, "payload": {"relationship_change_event_id": row["id"], "target_name": row["target_name"]}, "action": row["interaction"], "category": "关系风向", "score": 86 + min(delta, 20), "source_event_id": None}
+        if audit_candidate_evidence(conn, cand)["decision"] == "publish":
+            candidates.append(cand)
+
+    # Collect R2.2 group pattern candidates if present
+    if conn.execute("PRAGMA table_info(group_pattern_candidates)").fetchall():
+        pattern_rows = conn.execute(
+            """
+            SELECT * FROM group_pattern_candidates
+            WHERE status IN ('candidate', 'confirmed') AND branch_key = ?
+            ORDER BY candidate_score DESC LIMIT 10
+            """,
+            (branch_key,),
+        ).fetchall()
+        for prow in pattern_rows:
+            # Pick a resident from the location if possible
+            r_match = conn.execute(
+                "SELECT id, name, role FROM residents WHERE location = ? LIMIT 1",
+                (prow["location"],),
+            ).fetchone() or conn.execute("SELECT id, name, role FROM residents LIMIT 1").fetchone()
+            if r_match and int(r_match["id"]) not in existing:
+                cand = {
+                    "resident_id": int(r_match["id"]),
+                    "name": r_match["name"],
+                    "role": r_match["role"],
+                    "location": prow["location"],
+                    "event_type": "group_pattern",
+                    "title": prow["title"],
+                    "content": f"{prow['title']}：参与人数 {prow['participant_count']}，拥挤偏离度 {prow['baseline_deviation']}。",
+                    "payload": {"pattern_id": prow["id"], "candidate_score": prow["candidate_score"]},
+                    "action": "aggregate",
+                    "category": "群体现象",
+                    "score": round(80 + prow["candidate_score"] * 15),
+                    "source_event_id": None,
+                }
+                if audit_candidate_evidence(conn, cand)["decision"] == "publish":
+                    candidates.append(cand)
+
     candidates.sort(key=lambda item: (-item["score"], item["resident_id"]))
     return candidates
 

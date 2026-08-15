@@ -2,7 +2,7 @@
  * MapLibre Map Component Module
  * Manages 2D MapLibre campus map, OSM raster layer, spatial nodes, agent markers, and interactive event handlers.
  */
-import { $, avatarFiles, escapeHtml, WorldStore } from "./world-store.js";
+import { $, avatarFiles, escapeHtml, WorldStore } from "./world-store.js?v=20260814-png-avatars";
 
 let maplibreInstance = null;
 let mapActivePopup = null;
@@ -29,7 +29,7 @@ function animateAgentPositions() {
     }
   });
 
-  if (maplibreInstance.getSource('campus-agents') && latestAgentFeatures) {
+  if (latestAgentFeatures) {
     const interpolatedFeatures = latestAgentFeatures.map(feat => {
       const id = feat.properties.resident_id;
       const pos = agentDisplayPositions.get(id);
@@ -43,10 +43,12 @@ function animateAgentPositions() {
       };
     });
 
-    maplibreInstance.getSource('campus-agents').setData({
-      type: 'FeatureCollection',
-      features: interpolatedFeatures
-    });
+    if (maplibreInstance && maplibreInstance.getSource('campus-agents')) {
+      maplibreInstance.getSource('campus-agents').setData({
+        type: 'FeatureCollection',
+        features: interpolatedFeatures
+      });
+    }
     syncAgentAvatarMarkers(interpolatedFeatures);
   }
 
@@ -67,6 +69,15 @@ function avatarOffset(index, count) {
   const radius = 18 + ring * 12;
   const angle = (index % 6) / Math.min(count, 6) * Math.PI * 2;
   return [Math.cos(angle) * radius, Math.sin(angle) * radius];
+}
+
+const nodeLabelMarkers = new Map();
+
+function syncNodeLabelMarkers() {
+  if (nodeLabelMarkers.size > 0) {
+    nodeLabelMarkers.forEach(marker => marker.remove());
+    nodeLabelMarkers.clear();
+  }
 }
 
 function syncAgentAvatarMarkers(agentFeatures) {
@@ -92,11 +103,15 @@ function syncAgentAvatarMarkers(agentFeatures) {
     const id = String(props.resident_id);
     let marker = agentAvatarMarkers.get(id);
     if (!marker) {
-      const element = document.createElement("button");
-      element.type = "button";
-      element.className = "map-agent-avatar";
+      const element = document.createElement("div");
+      element.className = "map-agent-marker-wrapper";
       element.title = `${props.name} · ${props.location}`;
-      element.innerHTML = `<img alt="${escapeHtml(props.name)}的头像">`;
+      element.innerHTML = `
+        <div class="map-agent-avatar">
+          <img src="/avatars/${avatarFileFor(props.resident_id)}" alt="${escapeHtml(props.name)}">
+        </div>
+        <div class="map-agent-label">${escapeHtml(props.name)}</div>
+      `;
       element.onclick = event => {
         event.stopPropagation();
         if (typeof window.focusAgentOnMap === "function") window.focusAgentOnMap(props.resident_id);
@@ -105,16 +120,15 @@ function syncAgentAvatarMarkers(agentFeatures) {
       agentAvatarMarkers.set(id, marker);
     }
     const element = marker.getElement();
-    // Agents are people, not a level-of-detail data layer: keep their avatar
-    // visible at every zoom level.  When several residents occupy one node,
-    // the small ring offset keeps every person discoverable instead of
-    // replacing them with a generic dot at overview zoom.
     element.style.display = "";
+    element.style.zIndex = "99";
     const [offsetX, offsetY] = avatarOffset(index, items.length);
     element.style.marginLeft = `${offsetX}px`;
     element.style.marginTop = `${offsetY}px`;
     const image = element.querySelector("img");
     if (image) image.src = `/avatars/${avatarFileFor(props.resident_id)}`;
+    const label = element.querySelector(".map-agent-label");
+    if (label && props.name) label.textContent = props.name;
     marker.setLngLat(feature.geometry.coordinates);
   }));
 }
@@ -124,6 +138,26 @@ function getWgs84BoundsArray(bounds) {
   if (Array.isArray(bounds) && bounds.length === 4) return bounds;
   if (typeof bounds === "object" && bounds.min_lon != null && bounds.min_lat != null && bounds.max_lon != null && bounds.max_lat != null) {
     return [bounds.min_lon, bounds.min_lat, bounds.max_lon, bounds.max_lat];
+  }
+  return null;
+}
+
+export function resolveCoordinates(entity, originLon = 116.3221954, originLat = 40.0023657) {
+  if (!entity) return null;
+  if (entity.longitude != null && entity.latitude != null) {
+    const lon = Number(entity.longitude);
+    const lat = Number(entity.latitude);
+    if (!Number.isNaN(lon) && !Number.isNaN(lat)) return [lon, lat];
+  }
+  if (entity.x != null || entity.z != null || entity.y != null) {
+    const x = Number(entity.x || 0);
+    const z = Number(entity.z ?? entity.y ?? 0);
+    const latRads = (originLat * Math.PI) / 180;
+    const metersPerDegLon = 111320 * Math.cos(latRads);
+    const metersPerDegLat = 110574;
+    const lon = originLon + x / metersPerDegLon;
+    const lat = originLat + z / metersPerDegLat;
+    return [lon, lat];
   }
   return null;
 }
@@ -138,14 +172,14 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
   const activeWorld = (spatialWorlds || []).find(w => w.world_key === currentWorldKey) || {};
   const boundsArr = getWgs84BoundsArray(spatialScene?.wgs84_bounds) || getWgs84BoundsArray(activeWorld?.wgs84_bounds);
 
-  let centerLon = 116.32, centerLat = 40.00;
+  let centerLon = 116.3221954, centerLat = 40.0023657;
   if (fitToBounds && boundsArr) {
     const [minLon, minLat, maxLon, maxLat] = boundsArr;
     centerLon = (minLon + maxLon) / 2;
     centerLat = (minLat + maxLat) / 2;
   } else if (spatialScene && spatialScene.origin_lon && spatialScene.origin_lat) {
-    centerLon = spatialScene.origin_lon;
-    centerLat = spatialScene.origin_lat;
+    centerLon = Number(spatialScene.origin_lon);
+    centerLat = Number(spatialScene.origin_lat);
   }
 
   const mapTileUrl = window.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -236,48 +270,83 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
 
   const currentScene = WorldStore.spatialScene;
   if (currentScene && Array.isArray(currentScene.nodes)) {
+    const sceneOriginLon = Number(currentScene.origin_lon || 116.3221954);
+    const sceneOriginLat = Number(currentScene.origin_lat || 40.0023657);
     const nodeMap = new Map((currentScene.nodes || []).map(n => [n.id, n]));
+    const physicalByNode = new Map((currentScene.physical_states || []).map(p => [Number(p.node_id), p]));
     // Physical state is a separate runtime observation layer. Join it to the
     // immutable OSM node graph only for display; it must never overwrite map
     // geometry or be inferred from a legacy time-of-day template.
-    const physicalByNode = new Map((currentScene.physical_states || []).map(s => [Number(s.node_id), s]));
+    const isLandmarkName = (name) => {
+      if (!name || typeof name !== 'string') return false;
+      if (name.startsWith('tsinghua_') || name.startsWith('node_') || name.startsWith('building_')) return false;
+      return /图书馆|主楼|学堂|食堂|餐厅|体育馆|大礼堂|二校门|博物馆|清芬|听涛|紫荆|观畴|桃李|逸夫|新水|理科楼|西体|东体|清华医院|艺术馆/.test(name);
+    };
+
+    const isHumanReadableName = (name) => {
+      if (!name || typeof name !== 'string') return false;
+      if (name.startsWith('tsinghua_') || name.startsWith('node_') || name.startsWith('building_')) return false;
+      return true;
+    };
+
     const geojsonFeatures = currentScene.nodes
-      .filter(n => n.longitude && n.latitude && ["building", "poi", "outdoor_area"].includes(n.node_type))
+      .filter(n => ["building", "poi", "outdoor_area"].includes(n.node_type))
       .map(n => {
+        const coords = resolveCoordinates(n, sceneOriginLon, sceneOriginLat);
+        if (!coords) return null;
         const physical = physicalByNode.get(Number(n.id)) || {};
-        return ({
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [n.longitude, n.latitude] },
-        properties: {
-          id: n.id,
-          name: n.name || "POI",
-          type: n.node_type || "poi",
-          tier: n.node_type === "building" && Number(n.capacity || 0) >= 400 ? 0 : (n.node_type === "poi" ? 2 : 1),
-          access_status: physical.access_status || n.status || "open",
-          crowd_density: Number(physical.crowd_density || 0),
-          precipitation: Number(physical.precipitation || 0),
-          noise_db: Number(physical.noise_db || 0)
+        const rawName = String(n.name || "").trim();
+        const validName = isHumanReadableName(rawName) ? rawName : "";
+        const capacity = Number(n.capacity || 0);
+
+        let tier = 2; // Default to minor POI (minzoom: 17.2)
+        if (isLandmarkName(rawName) || capacity >= 300) {
+          tier = 0; // Key Landmark (minzoom: 13.5)
+        } else if (n.node_type === "building" && validName) {
+          tier = 1; // Named Building (minzoom: 15.8)
         }
-      });
-      });
+
+        // Suppress raw unnamed OSM technical nodes from cluttering the visual map
+        if (tier === 2 && !validName) {
+          return null;
+        }
+
+        return ({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: coords },
+          properties: {
+            id: n.id,
+            name: validName || "POI",
+            type: n.node_type || "poi",
+            tier: tier,
+            access_status: physical.access_status || n.status || "open",
+            crowd_density: Number(physical.crowd_density || 0),
+            precipitation: Number(physical.precipitation || 0),
+            noise_db: Number(physical.noise_db || 0)
+          }
+        });
+      })
+      .filter(Boolean);
 
     const edgeFeatures = (currentScene.edges || [])
       .map(e => {
         const fromNode = nodeMap.get(e.from_node_id);
         const toNode = nodeMap.get(e.to_node_id);
-        if (!fromNode || !toNode || !fromNode.longitude || !fromNode.latitude || !toNode.longitude || !toNode.latitude) return null;
+        const fromCoords = resolveCoordinates(fromNode, sceneOriginLon, sceneOriginLat);
+        const toCoords = resolveCoordinates(toNode, sceneOriginLon, sceneOriginLat);
+        if (!fromCoords || !toCoords) return null;
         return {
           type: 'Feature',
           geometry: {
             type: 'LineString',
-            coordinates: [[fromNode.longitude, fromNode.latitude], [toNode.longitude, toNode.latitude]]
+            coordinates: [fromCoords, toCoords]
           },
           properties: {
             id: e.id,
             weather_factor: Number(e.weather_factor || 1.0),
             congestion_factor: Number(e.congestion_factor || 1.0),
             high_resistance: Number(e.weather_factor || 1.0) > 1.25
-            ,closed: String(e.status || 'open') !== 'open'
+            , closed: String(e.status || 'open') !== 'open'
           }
         };
       })
@@ -305,19 +374,31 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
           type: 'line',
           source: 'campus-edges',
           paint: {
-            'line-color': '#42a5f5',
-            'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1.5, 18, 3.5],
-            'line-opacity': 0.35
+            'line-color': '#90caf9',
+            'line-width': ['interpolate', ['linear'], ['zoom'], 14, 0.8, 18, 2.0],
+            'line-opacity': 0.22
           }
         });
+      } else {
+        maplibreInstance.setPaintProperty('campus-edges-layer', 'line-color', '#90caf9');
+        maplibreInstance.setPaintProperty('campus-edges-layer', 'line-opacity', 0.22);
+        maplibreInstance.setPaintProperty('campus-edges-layer', 'line-width', ['interpolate', ['linear'], ['zoom'], 14, 0.8, 18, 2.0]);
       }
 
       if (!maplibreInstance.getLayer('campus-edges-closed-layer')) {
         maplibreInstance.addLayer({
           id: 'campus-edges-closed-layer', type: 'line', source: 'campus-edges',
           filter: ['==', ['get', 'closed'], true],
-          paint: { 'line-color': '#d84315', 'line-width': ['interpolate', ['linear'], ['zoom'], 14, 3, 18, 6], 'line-opacity': 0.9 }
+          paint: {
+            'line-color': '#ffb74d',
+            'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1.2, 18, 2.5],
+            'line-opacity': 0.35
+          }
         });
+      } else {
+        maplibreInstance.setPaintProperty('campus-edges-closed-layer', 'line-color', '#ffb74d');
+        maplibreInstance.setPaintProperty('campus-edges-closed-layer', 'line-opacity', 0.35);
+        maplibreInstance.setPaintProperty('campus-edges-closed-layer', 'line-width', ['interpolate', ['linear'], ['zoom'], 14, 1.2, 18, 2.5]);
       }
 
       if (!maplibreInstance.getLayer('campus-edges-resistance-layer')) {
@@ -327,15 +408,18 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
           source: 'campus-edges',
           filter: ['==', ['get', 'high_resistance'], true],
           paint: {
-            'line-color': '#ff3d00',
-            'line-width': ['interpolate', ['linear'], ['zoom'], 14, 2.5, 18, 5],
-            'line-dasharray': [2, 2],
-            'line-opacity': 0.85
+            'line-color': '#90caf9',
+            'line-width': ['interpolate', ['linear'], ['zoom'], 14, 0.8, 18, 2.0],
+            'line-opacity': 0.25
           }
         });
+      } else {
+        maplibreInstance.setPaintProperty('campus-edges-resistance-layer', 'line-color', '#90caf9');
+        maplibreInstance.setPaintProperty('campus-edges-resistance-layer', 'line-opacity', 0.25);
+        maplibreInstance.setPaintProperty('campus-edges-resistance-layer', 'line-width', ['interpolate', ['linear'], ['zoom'], 14, 0.8, 18, 2.0]);
       }
 
-      // 1. POIs and Building Nodes Layer
+      // 1. POIs and Building Nodes Layer (Hierarchical Tiers)
       if (maplibreInstance.getSource('campus-nodes')) {
         maplibreInstance.getSource('campus-nodes').setData({
           type: 'FeatureCollection',
@@ -347,52 +431,52 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
           data: { type: 'FeatureCollection', features: geojsonFeatures }
         });
 
+        // Tier 0: Major Landmarks / Big Nodes (Visible at all zoom levels, minzoom: 0)
         maplibreInstance.addLayer({
           id: 'campus-nodes-layer',
           type: 'circle',
           source: 'campus-nodes',
-          minzoom: 12.5,
+          minzoom: 0,
           filter: ['==', ['get', 'tier'], 0],
           paint: {
-            'circle-radius': ['interpolate', ['linear'], ['zoom'], 12.5, 4, 16, 7, 19, 10],
-            'circle-color': ['case', ['==', ['get', 'access_status'], 'closed'], '#d84315', ['>=', ['get', 'crowd_density'], 0.8], '#f9a825', '#1769aa'],
+            'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 3, 14, 5, 18, 9],
+            'circle-color': ['case', ['==', ['get', 'access_status'], 'closed'], '#d84315', ['>=', ['get', 'crowd_density'], 0.8], '#f9a825', '#1e88e5'],
             'circle-stroke-width': 2,
             'circle-stroke-color': '#ffffff'
           }
         });
+
+        // Tier 1: Named Buildings / Medium Nodes (Shown when zoomed in, minzoom: 14.5)
         maplibreInstance.addLayer({
-          id: 'campus-building-nodes-layer', type: 'circle', source: 'campus-nodes', minzoom: 14.5,
+          id: 'campus-building-nodes-layer',
+          type: 'circle',
+          source: 'campus-nodes',
+          minzoom: 14.5,
           filter: ['==', ['get', 'tier'], 1],
-          paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 15, 4, 18, 8], 'circle-color': ['case', ['==', ['get', 'access_status'], 'closed'], '#d84315', ['>=', ['get', 'crowd_density'], 0.8], '#f9a825', '#3287c5'], 'circle-stroke-width': 1.5, 'circle-stroke-color': '#ffffff' }
-        });
-        maplibreInstance.addLayer({
-          id: 'campus-poi-nodes-layer', type: 'circle', source: 'campus-nodes', minzoom: 16,
-          filter: ['==', ['get', 'tier'], 2],
-          paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 16, 2.5, 19, 5], 'circle-color': '#59a978', 'circle-stroke-width': 1, 'circle-stroke-color': '#ffffff' }
+          paint: {
+            'circle-radius': ['interpolate', ['linear'], ['zoom'], 14.5, 3, 18, 6],
+            'circle-color': ['case', ['==', ['get', 'access_status'], 'closed'], '#d84315', ['>=', ['get', 'crowd_density'], 0.8], '#f9a825', '#5c6bc0'],
+            'circle-opacity': 0.85,
+            'circle-stroke-width': 1.5,
+            'circle-stroke-color': '#ffffff'
+          }
         });
 
-        try {
-          maplibreInstance.addLayer({
-            id: 'campus-nodes-label',
-            type: 'symbol',
-            source: 'campus-nodes',
-            minzoom: 15.5,
-            filter: ['==', ['get', 'tier'], 0],
-            layout: {
-              'text-field': ['get', 'name'],
-              'text-size': 11,
-              'text-offset': [0, 1.2],
-              'text-anchor': 'top'
-            },
-            paint: {
-              'text-color': '#ffffff',
-              'text-halo-color': '#102033',
-              'text-halo-width': 2
-            }
-          });
-        } catch (labelErr) {
-          console.warn("MapLibre node symbol label omitted:", labelErr.message);
-        }
+        // Tier 2: Minor POIs / Small Nodes (Shown on high zoom detail, minzoom: 16.0)
+        maplibreInstance.addLayer({
+          id: 'campus-poi-nodes-layer',
+          type: 'circle',
+          source: 'campus-nodes',
+          minzoom: 16.0,
+          filter: ['==', ['get', 'tier'], 2],
+          paint: {
+            'circle-radius': ['interpolate', ['linear'], ['zoom'], 16.0, 2, 19, 4],
+            'circle-color': '#78909c',
+            'circle-opacity': 0.6,
+            'circle-stroke-width': 1,
+            'circle-stroke-color': '#ffffff'
+          }
+        });
 
         const openNodePopup = (e) => {
           if (!e.features || !e.features.length) return;
@@ -433,12 +517,13 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
 
       // 2. Agent Live Markers Layer on 2D Map
       const agentFeatures = Array.from(WorldStore.spatialAgents.values())
-        .filter(a => a.longitude && a.latitude)
         .map(a => {
+          const coords = resolveCoordinates(a, sceneOriginLon, sceneOriginLat);
+          if (!coords) return null;
           const resident = (WorldStore.agents || []).find(r => Number(r.id) === Number(a.resident_id)) || {};
           return {
             type: 'Feature',
-            geometry: { type: 'Point', coordinates: [a.longitude, a.latitude] },
+            geometry: { type: 'Point', coordinates: coords },
             properties: {
               resident_id: a.resident_id,
               name: resident.name || `Agent ${a.resident_id}`,
@@ -448,7 +533,8 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
               current_node_id: a.current_node_id
             }
           };
-        });
+        })
+        .filter(Boolean);
       latestAgentFeatures = agentFeatures;
 
       agentFeatures.forEach(feat => {
@@ -469,6 +555,14 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
 
       if (!agentAnimationRaf) {
         agentAnimationRaf = requestAnimationFrame(animateAgentPositions);
+      }
+
+      // Synchronize DOM markers immediately
+      syncAgentAvatarMarkers(agentFeatures);
+      syncNodeLabelMarkers(geojsonFeatures);
+
+      if (!maplibreInstance.isStyleLoaded()) {
+        return;
       }
 
       if (!maplibreInstance.getSource('campus-agents')) {
@@ -504,7 +598,7 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
             },
             paint: {
               'text-color': '#64ffda',
-              'text-opacity': ['interpolate', ['linear'], ['zoom'], 16.8, 0, 17.5, 1],
+              'text-opacity': ['interpolate', ['linear'], ['zoom'], 14.5, 0.4, 15.5, 1],
               'text-halo-color': '#000000',
               'text-halo-width': 2
             }
@@ -555,13 +649,30 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
         });
       }
       syncAgentAvatarMarkers(agentFeatures);
+      syncNodeLabelMarkers(geojsonFeatures);
     };
 
-    if (maplibreInstance.isStyleLoaded()) {
-      updateSource();
+    const runUpdate = () => {
+      try {
+        updateSource();
+      } catch (err) {
+        console.warn("MapLibre updateSource error:", err);
+      }
+    };
+
+    if (maplibreInstance.isStyleLoaded() || maplibreInstance.loaded()) {
+      runUpdate();
     } else {
-      maplibreInstance.once('load', updateSource);
+      maplibreInstance.once('load', runUpdate);
+      maplibreInstance.once('styledata', runUpdate);
+      setTimeout(runUpdate, 200);
     }
+  }
+}
+
+export function refreshMapLibreMarkers() {
+  if (maplibreInstance) {
+    initOrUpdateMapLibreMap(spatialWorldsCache);
   }
 }
 

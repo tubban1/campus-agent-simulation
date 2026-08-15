@@ -3,7 +3,7 @@
  * Manages 3D campus WebGL canvas, camera, lighting, 3D building meshes, agent characters, and continuous animation loop.
  */
 import * as THREE from "/three/build/three.module.js";
-import { $, colors, avatarFiles, defaultSpaces, WorldStore, escapeHtml } from "./world-store.js";
+import { $, colors, avatarFiles, defaultSpaces, WorldStore, escapeHtml } from "./world-store.js?v=20260814-png-avatars";
 
 let renderer, profileRenderer, webglAvailable = true;
 let scene, camera, sun, ground, grid, root, campusGroup, routeGroup, worldAgentGroup, bubbleGroup;

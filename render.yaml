@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: campus-agent-simulation
+    name: world2
     runtime: python
     buildCommand: pip install -r requirements.txt
     preDeployCommand: python scripts/deploy_database.py --require-postgres

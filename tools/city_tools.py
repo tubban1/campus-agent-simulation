@@ -1,4 +1,4 @@
-﻿import math
+import math
 
 from app.economy.service import post_money_transfer
 from app.supply.service import settle_goods_trade, supply_runtime_available
@@ -167,7 +167,8 @@ def move_resident(conn, resident_id, destination, commit=True):
     resident = get_resident(conn, resident_id)
     if not resident:
         raise ValueError("找不到这个 Agent")
-    if destination not in VALID_LOCATIONS:
+    from app.spatial.location_catalog import is_real_world_location
+    if destination not in VALID_LOCATIONS and not is_real_world_location(conn, destination):
         raise ValueError("地点不存在")
 
     day = get_current_day(conn)

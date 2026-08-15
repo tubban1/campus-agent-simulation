@@ -584,6 +584,73 @@ CREATE INDEX IF NOT EXISTS idx_trajectory_episodes_goal ON trajectory_episodes(g
 CREATE UNIQUE INDEX IF NOT EXISTS idx_trajectory_episodes_unique_goal ON trajectory_episodes(resident_id, goal_id, horizon);
 """
 
+ROADMAP2_OBSERVER_SQL = """
+CREATE TABLE IF NOT EXISTS agent_expectations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resident_id INTEGER NOT NULL,
+    expectation_type TEXT NOT NULL DEFAULT 'routine_location',
+    subject_key TEXT NOT NULL DEFAULT '',
+    expected_pattern_json TEXT NOT NULL DEFAULT '{}',
+    confidence INTEGER NOT NULL DEFAULT 50,
+    branch_key TEXT NOT NULL DEFAULT 'main',
+    created_day INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS continuity_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resident_id INTEGER NOT NULL,
+    gap_type TEXT NOT NULL DEFAULT 'unobserved_interval',
+    time_window_start TEXT NOT NULL DEFAULT '',
+    time_window_end TEXT NOT NULL DEFAULT '',
+    gap_magnitude REAL NOT NULL DEFAULT 0.0,
+    summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'unexplained',
+    branch_key TEXT NOT NULL DEFAULT 'main',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_hypotheses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resident_id INTEGER NOT NULL,
+    continuity_observation_id INTEGER,
+    hypothesis_text TEXT NOT NULL DEFAULT '',
+    likelihood_score REAL NOT NULL DEFAULT 0.5,
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'active',
+    branch_key TEXT NOT NULL DEFAULT 'main',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE CASCADE,
+    FOREIGN KEY (continuity_observation_id) REFERENCES continuity_observations(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_pattern_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_type TEXT NOT NULL DEFAULT 'spatial_cluster',
+    title TEXT NOT NULL DEFAULT '',
+    location TEXT NOT NULL DEFAULT '',
+    time_window_start TEXT NOT NULL DEFAULT '',
+    time_window_end TEXT NOT NULL DEFAULT '',
+    participant_count INTEGER NOT NULL DEFAULT 0,
+    density_ratio REAL NOT NULL DEFAULT 1.0,
+    baseline_deviation REAL NOT NULL DEFAULT 0.0,
+    candidate_score REAL NOT NULL DEFAULT 0.0,
+    status TEXT NOT NULL DEFAULT 'candidate',
+    evidence_event_ids_json TEXT NOT NULL DEFAULT '[]',
+    branch_key TEXT NOT NULL DEFAULT 'main',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_expectations_resident ON agent_expectations(resident_id, expectation_type);
+CREATE INDEX IF NOT EXISTS idx_continuity_observations_resident ON continuity_observations(resident_id, status);
+CREATE INDEX IF NOT EXISTS idx_agent_hypotheses_resident ON agent_hypotheses(resident_id, status);
+CREATE INDEX IF NOT EXISTS idx_group_pattern_candidates_status ON group_pattern_candidates(status, pattern_type);
+"""
+
 RELATIONSHIP_DYNAMIC_COLUMNS = {
     "affinity": "INTEGER NOT NULL DEFAULT 50",
     "competition": "INTEGER NOT NULL DEFAULT 0",
@@ -608,7 +675,7 @@ CREATE TABLE IF NOT EXISTS world_runtime (
     world_time TEXT NOT NULL DEFAULT '',
     tick_interval_seconds INTEGER NOT NULL DEFAULT 60,
     agents_per_tick INTEGER NOT NULL DEFAULT 3,
-    daily_auto_model_budget INTEGER NOT NULL DEFAULT 500,
+    daily_auto_model_budget INTEGER NOT NULL DEFAULT 1000,
     auto_model_calls_used INTEGER NOT NULL DEFAULT 0,
     budget_date TEXT NOT NULL DEFAULT '',
     current_agent_cursor INTEGER NOT NULL DEFAULT 0,

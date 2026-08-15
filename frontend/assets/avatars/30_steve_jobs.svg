@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+  <rect width="160" height="160" rx="28" fill="#D5D8DC"/>
+  <circle cx="80" cy="66" r="34" fill="#F5CBA7"/>
+  <path d="M48 62 C50 28 110 24 114 62 C104 42 58 42 48 62 Z" fill="#5D6D7E"/>
+  <circle cx="67" cy="68" r="4" fill="#1F2937"/>
+  <circle cx="93" cy="68" r="4" fill="#1F2937"/>
+  <path d="M70 83 Q80 91 91 83" stroke="#8B3A3A" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <path d="M45 154 C48 112 112 112 115 154 Z" fill="#212F3D"/>
+  
+          <!-- Round Glasses -->
+          <circle cx="66" cy="66" r="10" fill="none" stroke="#2C3E50" stroke-width="3"/>
+          <circle cx="94" cy="66" r="10" fill="none" stroke="#2C3E50" stroke-width="3"/>
+          <line x1="76" y1="66" x2="84" y2="66" stroke="#2C3E50" stroke-width="3"/>
+          <!-- Stubble Beard -->
+          <path d="M64 84 Q80 96 96 84" stroke="#795548" stroke-width="3" stroke-dasharray="2,2" fill="none"/>
+          <!-- Turtleneck collar -->
+          <rect x="64" y="108" width="32" height="16" rx="4" fill="#1C2833"/>
+        
+</svg>

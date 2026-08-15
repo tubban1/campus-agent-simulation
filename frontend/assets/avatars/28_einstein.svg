@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+  <rect width="160" height="160" rx="28" fill="#D4E6F1"/>
+  <circle cx="80" cy="66" r="34" fill="#FAD7A0"/>
+  <path d="M48 62 C50 28 110 24 114 62 C104 42 58 42 48 62 Z" fill="#F2F4F4"/>
+  <circle cx="67" cy="68" r="4" fill="#1F2937"/>
+  <circle cx="93" cy="68" r="4" fill="#1F2937"/>
+  <path d="M70 83 Q80 91 91 83" stroke="#8B3A3A" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <path d="M45 154 C48 112 112 112 115 154 Z" fill="#5D6D7E"/>
+  
+          <!-- Wild Hair -->
+          <circle cx="42" cy="48" r="18" fill="#F2F4F4"/>
+          <circle cx="118" cy="48" r="18" fill="#F2F4F4"/>
+          <circle cx="80" cy="32" r="22" fill="#F2F4F4"/>
+          <!-- Bushy Moustache -->
+          <path d="M62 78 Q80 92 98 78 Q80 84 62 78" fill="#F2F4F4"/>
+        
+</svg>

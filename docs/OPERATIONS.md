@@ -245,7 +245,7 @@ Pooler，`pg_dump`、恢复和需要 session 语义的迁移使用 Session Poole
 构建：
 
 ```bash
-docker build -t campus-agent-simulation .
+docker build -t world2 .
 ```
 
 运行：
@@ -254,7 +254,7 @@ docker build -t campus-agent-simulation .
 docker run --rm -p 8000:8000 \
   -e LLM_API_KEY=你的API_KEY \
   -e LLM_API_URL=你的模型接口 \
-  campus-agent-simulation
+  world2
 ```
 
 当前 Dockerfile 在 build 阶段执行：

@@ -285,25 +285,34 @@ def build_rule_based_plan(conn, resident, window_start, window_end, world_time=N
         intent = "整理一天收获并进行轻量社交"
     steps = []
     offsets = [45, 255, 435]
+    from app.spatial.location_catalog import choose_weighted_real_location
     for index, offset in enumerate(offsets):
         step_time = window_start + timedelta(minutes=offset + random.randint(-20, 20))
         if step_time >= window_end:
             step_time = window_end - timedelta(minutes=30)
         hour = step_time.hour
+        res_loc = dict(resident).get("location", "")
         if 0 <= hour < 6:
-            location, action = "宿舍区", "rest"
+            action = "rest"
+            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "宿舍区"
         elif role_kind == "teacher":
-            location, action = "教学楼", "attend_class"
+            action = "attend_class"
+            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "教学楼"
         elif role_kind == "business":
-            location, action = "商业街", "consume"
+            action = "consume"
+            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "商业街"
         elif role_kind == "service":
-            location, action = "校务处", "observe"
+            action = "observe"
+            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "校务处"
         elif 11 <= hour < 14:
-            location, action = "食堂", "consume"
+            action = "consume"
+            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "食堂"
         elif 8 <= hour < 18:
-            location, action = "教学楼", "attend_class"
+            action = "attend_class"
+            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "教学楼"
         else:
-            location, action = resident["location"], "reflect"
+            action = "reflect"
+            location = res_loc or "宿舍区"
         steps.append(
             {
                 "time": step_time.strftime("%H:%M"),
@@ -342,6 +351,24 @@ def get_space_snapshot(conn, day=None):
     real_locations = real_world_locations(conn)
     if real_locations:
         spaces = []
+        cat_aggregates = {
+            "食堂": {"capacity": 0, "actual_agents": 0},
+            "教学楼": {"capacity": 0, "actual_agents": 0},
+            "图书馆": {"capacity": 0, "actual_agents": 0},
+            "宿舍区": {"capacity": 0, "actual_agents": 0},
+            "商业街": {"capacity": 0, "actual_agents": 0},
+            "操场": {"capacity": 0, "actual_agents": 0},
+            "校务处": {"capacity": 0, "actual_agents": 0},
+        }
+        cat_terms = {
+            "食堂": ("食堂", "餐厅", "餐饮", "咖啡", "清晏", "清芬", "观畴", "桃李", "紫荆园"),
+            "教学楼": ("教学", "教室", "学堂", "实验", "科研", "逸夫"),
+            "图书馆": ("图书馆", "阅览"),
+            "宿舍区": ("宿舍", "公寓", "寝室", "住宅", "紫荆"),
+            "商业街": ("商业", "超市", "商店", "便利"),
+            "操场": ("操场", "体育", "球场", "运动"),
+            "校务处": ("主楼", "行政", "办公", "服务", "校务"),
+        }
         for loc in real_locations:
             location_name = loc["name"]
             capacity = int(loc.get("capacity") or 100)
@@ -378,6 +405,35 @@ def get_space_snapshot(conn, day=None):
                     "active_events": relevant_events,
                 }
             )
+
+            for cat_name, terms in cat_terms.items():
+                if any(term in location_name for term in terms):
+                    cat_aggregates[cat_name]["capacity"] += capacity
+                    cat_aggregates[cat_name]["actual_agents"] += actual_agents
+
+        for cat_name, agg in cat_aggregates.items():
+            cap = max(200, agg["capacity"])
+            occ = agg["actual_agents"]
+            spaces.append({
+                "code": f"cat_{cat_name}",
+                "name": cat_name,
+                "location": cat_name,
+                "capacity": cap,
+                "open_hour": 0,
+                "close_hour": 24,
+                "status": "开放",
+                "crowd_field": "campus_flow",
+                "purpose": f"{cat_name} 汇总",
+                "crowd_percent": round(occ * 100 / max(1, total_agents)) if total_agents > 0 else 0,
+                "demand_percent": clamp(env.get("campus_flow", 50)),
+                "actual_agents": occ,
+                "estimated_occupancy": occ,
+                "occupancy": occ,
+                "available_slots": max(0, cap - occ),
+                "effective_status": "开放",
+                "active_events": [],
+            })
+
         return {"hour": hour, "spaces": spaces, "active_events": active_events}
 
     spaces = []
@@ -541,6 +597,17 @@ def perceive_environment(conn, resident_id):
     local_crowd = crowd_by_location.get(location, env.get("campus_flow", 50))
     space_snapshot = get_space_snapshot(conn, day)
     current_space = next((space for space in space_snapshot["spaces"] if space["location"] == location), None)
+    from app.spatial.location_catalog import rank_real_location_options
+    candidate_options = rank_real_location_options(conn, resident_id, "consume", hour=get_environment_hour(env), weather=env.get("weather", ""))
+    nearby_candidate_pois = [
+        {
+            "name": item["location"],
+            "score": item["score"],
+            "available": item["available"],
+            "estimated_minutes": item["reasons"].get("travel_minutes_estimate", 0),
+        }
+        for item in candidate_options[:5]
+    ]
     perception = {
         "day": day,
         "location": location,
@@ -555,6 +622,7 @@ def perceive_environment(conn, resident_id):
         "network_status": env.get("network_status"),
         "safety_level": env.get("safety_level"),
         "current_space": current_space,
+        "nearby_candidate_pois": nearby_candidate_pois,
         "active_events": space_snapshot["active_events"],
         "agent_energy": module_state["modules"]["Physical"]["energy"],
         "agent_mood": module_state["modules"]["Physical"]["mood"],
@@ -936,11 +1004,24 @@ def build_agent_social_graph(conn, resident_id, limit=10):
 
 
 def agent_newspaper_posts(day: Optional[int] = None):
-    """Return campus newspaper posts for the requested day, defaulting to today."""
+    """Return campus newspaper posts for the requested day, defaulting to today or latest issue."""
     with get_connection() as conn:
         ensure_agent_news_system(conn)
         current_day = get_current_day(conn)
-        target_day = max(1, int(day)) if day is not None else current_day
+        days = [
+            int(row["day"])
+            for row in conn.execute(
+                "SELECT DISTINCT day FROM agent_news_posts ORDER BY day DESC LIMIT 60"
+            ).fetchall()
+        ]
+        all_days = sorted(list(set(days + [current_day])))
+        latest_day = max(all_days) if all_days else current_day
+
+        if day is not None:
+            target_day = max(1, int(day))
+        else:
+            target_day = latest_day
+
         posts = conn.execute(
             """
             SELECT p.day, p.resident_id, r.name, r.role, p.source_slot,
@@ -953,20 +1034,17 @@ def agent_newspaper_posts(day: Optional[int] = None):
             """,
             (target_day,),
         ).fetchall()
-        days = [
-            int(row["day"])
-            for row in conn.execute(
-                "SELECT DISTINCT day FROM agent_news_posts ORDER BY day DESC LIMIT 60"
-            ).fetchall()
-        ]
-        previous_day = next((item for item in days if item < target_day), None)
-        next_day = next((item for item in sorted(days) if item > target_day), None)
+
+        previous_day = next((item for item in reversed(all_days) if item < target_day), None)
+        next_day = next((item for item in all_days if item > target_day), None)
+
+        is_today = (target_day == latest_day)
         return {
             "day": target_day,
-            "current_day": current_day,
+            "current_day": latest_day,
             "edition": {
-                "kind": "rolling" if target_day == current_day else "archive",
-                "label": "今日滚动版" if target_day == current_day else f"第 {target_day} 天归档日报",
+                "kind": "rolling" if is_today else "archive",
+                "label": "今日滚动版" if is_today else f"第 {target_day} 天归档日报",
                 "brief_count": len(posts),
                 "issue_key": f"day-{target_day}",
             },

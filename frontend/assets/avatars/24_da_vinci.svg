@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+  <rect width="160" height="160" rx="28" fill="#D5C4A1"/>
+  <circle cx="80" cy="66" r="34" fill="#F5CBA7"/>
+  <path d="M48 62 C50 28 110 24 114 62 C104 42 58 42 48 62 Z" fill="#EAEAEA"/>
+  <circle cx="67" cy="68" r="4" fill="#1F2937"/>
+  <circle cx="93" cy="68" r="4" fill="#1F2937"/>
+  <path d="M70 83 Q80 91 91 83" stroke="#8B3A3A" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <path d="M45 154 C48 112 112 112 115 154 Z" fill="#5B2C2C"/>
+  
+          <!-- Artist Beret -->
+          <path d="M45 42 Q80 20 115 42 Q80 35 45 42 Z" fill="#3B2219"/>
+          <!-- Long Hair -->
+          <path d="M42 45 C35 70 42 100 48 115 M118 45 C125 70 118 100 112 115" stroke="#EAEAEA" stroke-width="8" stroke-linecap="round" fill="none"/>
+          <!-- Long Beard -->
+          <path d="M58 84 Q80 130 102 84" fill="#EAEAEA"/>
+        
+</svg>

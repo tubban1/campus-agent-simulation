@@ -18,10 +18,12 @@ export const colors = [
 ];
 
 export const avatarFiles = [
-  "01_lin_xiaoxia.svg", "02_chen_yuhang.svg", "03_zhao_yiming.svg", "04_su_qing.svg", "05_zhou_boss.svg",
-  "06_li_jie.svg", "07_wang_teacher.svg", "08_he_admin.svg", "09_zhang_chen.svg", "10_logistics.svg",
-  "11_gu_nanxing.svg", "12_xu_jiayan.svg", "13_meng_yutong.svg", "14_shen_yizhou.svg", "15_tang_xiaotang.svg",
-  "16_lu_ziang.svg", "17_qiao_anran.svg", "18_han_mo.svg", "19_bai_lu.svg", "20_qin_yue.svg"
+  "01_lin_xiaoxia.png", "02_chen_yuhang.png", "03_zhao_yiming.png", "04_su_qing.png", "05_zhou_boss.png",
+  "06_li_jie.png", "07_wang_teacher.png", "08_he_admin.png", "09_zhang_chen.png", "10_logistics.png",
+  "11_gu_nanxing.png", "12_xu_jiayan.png", "13_meng_yutong.png", "14_shen_yizhou.png", "15_tang_xiaotang.png",
+  "16_lu_ziang.png", "17_qiao_anran.png", "18_han_mo.png", "19_bai_lu.png", "20_qin_yue.png",
+  "21_confucius.svg", "22_socrates.svg", "23_buddha.svg", "24_da_vinci.svg", "25_shakespeare.svg",
+  "26_newton.svg", "27_cixi.svg", "28_einstein.svg", "29_hepburn.svg", "30_steve_jobs.svg"
 ];
 
 export const defaultSpaces = [
@@ -38,7 +40,7 @@ export const defaultSpaces = [
 
 export const WorldStore = {
   world: {
-    environment: { weather: "校园天气", temperature: "--", time_slot: "实时" },
+    environment: { weather: "维度天气", temperature: "--", time_slot: "实时" },
     spaces: { spaces: defaultSpaces },
     events: []
   },
@@ -65,7 +67,7 @@ export const WorldStore = {
   sceneVersion: 1,
   sceneRequestToken: 0,
   selected: 0,
-  observedFocus: "校园全局",
+  observedFocus: "World2 全局",
   relationshipMetric: "trust",
 
   setWorldState(nextWorld) {

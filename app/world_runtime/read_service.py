@@ -15,9 +15,11 @@ def list_world_events(
     if after_id <= 0:
         rows = conn.execute(
             """
-            SELECT * FROM world_event_stream
-            WHERE branch_key = ?
-            ORDER BY id DESC
+            SELECT e.*, r.name AS resident_name, r.role AS resident_role
+            FROM world_event_stream e
+            LEFT JOIN residents r ON r.id = e.resident_id
+            WHERE e.branch_key = ?
+            ORDER BY e.id DESC
             LIMIT ?
             """,
             (selected_branch, limit),
@@ -26,9 +28,11 @@ def list_world_events(
     else:
         rows = conn.execute(
             """
-            SELECT * FROM world_event_stream
-            WHERE id > ? AND branch_key = ?
-            ORDER BY id ASC
+            SELECT e.*, r.name AS resident_name, r.role AS resident_role
+            FROM world_event_stream e
+            LEFT JOIN residents r ON r.id = e.resident_id
+            WHERE e.id > ? AND e.branch_key = ?
+            ORDER BY e.id ASC
             LIMIT ?
             """,
             (after_id, selected_branch, limit),

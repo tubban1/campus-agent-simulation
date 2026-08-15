@@ -14,11 +14,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.db import get_connection  # noqa: E402
-from app.main import (  # noqa: E402
+from app.db.bootstrap_schema import (  # noqa: E402
     ensure_agent_news_system,
     ensure_campus_state_table,
     ensure_external_information_system,
+    ensure_roadmap2_observer_system,
     ensure_space_system,
+)
+from app.main import (  # noqa: E402
     ensure_world_runtime_tables,
 )
 from app.models import SCHEMA_SQL  # noqa: E402
@@ -43,6 +46,7 @@ def main() -> None:
         ensure_space_system(conn, allow_ddl=True)
         ensure_agent_news_system(conn, allow_ddl=True)
         ensure_external_information_system(conn, allow_ddl=True)
+        ensure_roadmap2_observer_system(conn, allow_ddl=True)
         ensure_world_runtime_tables(conn, allow_ddl=True)
         conn.execute(
             "INSERT OR REPLACE INTO simulation_state (key, value) VALUES (?, ?)",

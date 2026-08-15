@@ -14,6 +14,8 @@ from app.capability_models import (
 from app.spatial.models import agent_spatial_capabilities
 
 
+from datetime import datetime, timezone
+
 DEFAULTS_VERSION = "capability-defaults-v1"
 MISSING_VALUE_POLICY = "structured trait, then role baseline, then deterministic neutral default"
 
@@ -126,11 +128,13 @@ def derive_capability_profile(resident_id, role, money, strategy):
         "defaults_version": DEFAULTS_VERSION,
         "missing_value_policy": MISSING_VALUE_POLICY,
         "version": 1,
+        "updated_at": datetime.now(timezone.utc),
     }
 
 
 def derive_opportunities(profile):
     opportunities = []
+    now = datetime.now(timezone.utc)
     for key, (capability_key, monetary_barrier) in OPPORTUNITY_DEFINITIONS.items():
         access_level = int(profile[capability_key])
         opportunities.append(
@@ -148,6 +152,7 @@ def derive_opportunities(profile):
                     "defaults_version": DEFAULTS_VERSION,
                 },
                 "version": 1,
+                "updated_at": now,
             }
         )
     return opportunities
