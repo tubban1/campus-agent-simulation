@@ -140,7 +140,11 @@ def apply_environment_feedback(conn, resident_id, action, result, *, current_day
 def get_campus_environment(conn, day=None, *, ensure_state_table, current_day,
                            default_environment, build_modules):
     ensure_state_table(conn)
-    day = current_day(conn) if day is None else day
+    if day is None or not isinstance(day, int):
+        try:
+            day = int(day)
+        except (TypeError, ValueError):
+            day = current_day(conn)
     row = repository.campus_state(conn, day)
     if not row:
         previous = repository.latest_campus_state_before(conn, day)

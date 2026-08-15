@@ -28,16 +28,22 @@ class SchemaMigrationRequired(RuntimeError):
 
 
 def table_columns(conn, table_name: str) -> set[str]:
-    """Return columns through the DB compatibility connection.
-
-    ``PostgresConnection`` intentionally translates this SQLite-shaped query
-    into ``information_schema``.  Centralising it prevents domain code from
-    depending on that compatibility detail.
-    """
-    return {
-        row["name"]
-        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    }
+    """Return columns through the DB compatibility connection."""
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    result = set()
+    for row in rows:
+        if hasattr(row, "keys"):
+            result.add(row["name"])
+        elif hasattr(row, "_mapping"):
+            result.add(row._mapping["name"])
+        elif isinstance(row, (list, tuple)):
+            result.add(str(row[1]))
+        else:
+            try:
+                result.add(row["name"])
+            except Exception:
+                result.add(str(row[1]))
+    return result
 
 
 def ensure_table_columns(conn, table_name, column_types, *, allow_ddl=False):

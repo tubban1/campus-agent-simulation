@@ -1,4 +1,4 @@
--- Supabase/PostgreSQL schema for Campus Agent Simulation.
+-- Supabase/PostgreSQL schema for World2 · Agent 平行世界.
 -- Paste this file into Supabase SQL Editor, or run it with psql.
 -- JSON-like fields are intentionally kept as text because the current Python
 -- code stores and parses JSON strings with json.dumps/json.loads.

@@ -2,7 +2,7 @@
 
 > 状态：实施方案  
 > 更新日期：2026-08-02  
-> 适用项目：Campus Agent Simulation
+> 适用项目：World2 · Agent 平行世界
 
 已确认的时间与账号条件：
 
