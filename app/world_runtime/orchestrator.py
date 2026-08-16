@@ -61,8 +61,20 @@ def start_world_tick(
     sync_current_day,
     world_slot_from_hour,
 ):
+    from datetime import timedelta
+    from app.world_runtime.clock import parse_world_datetime
+
     runtime = read_runtime(conn)
-    world_time = get_world_now()
+    runtime_world_time = parse_world_datetime(runtime.get("world_time")) if runtime and runtime.get("world_time") else None
+    if runtime_world_time:
+        try:
+            step_minutes = int(os.getenv("WORLD_SIM_MINUTES_PER_TICK", "5"))
+        except (ValueError, TypeError):
+            step_minutes = 5
+        world_time = runtime_world_time + timedelta(minutes=step_minutes)
+    else:
+        world_time = get_world_now()
+
     day_sync = sync_current_day(conn, world_time)
     day = day_sync["day"]
     slot = world_slot_from_hour(world_time.hour)

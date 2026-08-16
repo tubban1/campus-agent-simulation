@@ -120,7 +120,7 @@ class FixedRSSAdapter:
             try:
                 response = requests.get(
                     source_url,
-                    timeout=min(10, max(2, int(config.get("timeout_seconds", 3)))),
+                    timeout=(1.5, 2.5),
                     headers={
                         "User-Agent": "World2/1.0 (+world simulation)"
                     },

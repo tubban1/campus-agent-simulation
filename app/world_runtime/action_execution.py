@@ -210,6 +210,56 @@ def get_current_spatial_action_context(conn, resident_id, action):
     return dict(row) if row else None
 
 
+def generate_llm_social_dialogue(conn, agent, target, action, location, goal):
+    """Generate real dialogue between co-located agents using LLMFactory."""
+    import os
+    if os.getenv("WORLD_RUNTIME_USE_LLM", "true").strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+    model_name = os.getenv("LLM_MODEL") or "configured-llm"
+    try:
+        from services.llm_service import ask_llm as _ask_llm
+        _ask_fn = globals().get("ask_llm") or _ask_llm
+        _log_fn = globals().get("log_model_call")
+    except Exception:
+        return None
+
+    prompt = f"""
+你是清华校园平行世界的精彩对话生成器。
+当前两位 Agent 处于同一地点【{location}】，正在发生社交交互（动作：{action}）。
+
+发起者：{agent['name']}（身份：{agent.get('role', '学者/学生')}，目标：{agent.get('goal', '')}）
+接收者：{target['name']}（身份：{target.get('role', '学者/学生')}，目标：{target.get('goal', '')}）
+
+发起者本次行动动机：{goal}
+
+请生成一段 2 句式的高质量真实对话与思想碰撞。
+要求：
+- 极具两位人物身份特质（如孔子/苏格拉底/爱因斯坦/乔布斯等学者极具思想哲理与学问，学生极具校园青春与思考）。
+- 对话紧扣现场主题，展现真实交流。
+- 格式严格为：{agent['name']}：“...” {target['name']}：“...”
+- 80 字以内，只输出对话。
+"""
+    try:
+        raw = _ask_fn(prompt)
+        dialogue = raw.strip().replace("\n", " ")
+        if len(dialogue) > 8:
+            if _log_fn:
+                _log_fn(
+                    conn,
+                    "agent_dialogue",
+                    status="success",
+                    resident_id=agent["id"],
+                    model_name=model_name,
+                    prompt_version="dialogue-v2",
+                    input_tokens=max(1, len(prompt) // 4),
+                    output_tokens=max(1, len(raw) // 4),
+                )
+            return dialogue
+    except Exception:
+        pass
+    return None
+
+
 def describe_runtime_action(conn, agent, action, destination, goal, day, observed=False):
     social_effect = None
     importance = 1
@@ -226,18 +276,30 @@ def describe_runtime_action(conn, agent, action, destination, goal, day, observe
         content = f"{agent['name']} 在{destination}休息恢复精力，暂时放慢行动节奏，目标：{goal}。"
         event_type = "world_agent_rest"
     elif action == "club_activity":
-        content = f"{agent['name']} 在{destination}参加社团或课余活动，校园互动热度被轻微带动，目标：{goal}。"
-        event_type = "world_agent_club_activity"
         social_effect = apply_runtime_social_effect(conn, agent, action, destination, day)
+        target = nearby_interaction_target(conn, agent["id"], destination)
+        dialogue = generate_llm_social_dialogue(conn, agent, target, action, destination, goal) if target else None
+        if dialogue:
+            content = f"{agent['name']} 与 {target['name']} 在{destination}交流活动体会：{dialogue}"
+            importance = max(importance, 2)
+        else:
+            content = f"{agent['name']} 在{destination}参加社团或课余活动，校园互动热度被轻微带动，目标：{goal}。"
+        event_type = "world_agent_club_activity"
     elif action == "conflict":
         content = f"{agent['name']} 在{destination}因拥挤、资源或意见差异出现轻微冲突，目标：{goal}。"
         event_type = "world_agent_conflict"
         social_effect = apply_runtime_social_effect(conn, agent, action, destination, day)
         importance = max(importance, 3)
     elif action == "collaborate":
-        content = f"{agent['name']} 在{destination}与他人协作推进任务，目标：{goal}。"
-        event_type = "world_agent_collaborate"
         social_effect = apply_runtime_social_effect(conn, agent, action, destination, day)
+        target = nearby_interaction_target(conn, agent["id"], destination)
+        dialogue = generate_llm_social_dialogue(conn, agent, target, action, destination, goal) if target else None
+        if dialogue:
+            content = f"{agent['name']} 与 {target['name']} 在{destination}探讨协作：{dialogue}"
+            importance = max(importance, 3)
+        else:
+            content = f"{agent['name']} 在{destination}与他人协作推进任务，目标：{goal}。"
+        event_type = "world_agent_collaborate"
         importance = max(importance, 2)
     elif action == "late":
         content = f"{agent['name']} 到达{destination}的节奏偏慢，可能错过部分安排，目标：{goal}。"
@@ -247,11 +309,18 @@ def describe_runtime_action(conn, agent, action, destination, goal, day, observe
         content = f"{agent['name']} 在{destination}整理或提交请假/事务申请，目标：{goal}。"
         event_type = "world_agent_request_leave"
     elif action == "chat":
-        content = f"{agent['name']} 在{agent['location']}围绕{destination}附近的校园状态进行轻量交流，目标：{goal}。"
+        loc = agent.get("location") or destination
+        social_effect = apply_runtime_social_effect(conn, agent, action, loc, day)
+        target = nearby_interaction_target(conn, agent["id"], loc)
+        dialogue = generate_llm_social_dialogue(conn, agent, target, action, loc, goal) if target else None
+        if dialogue:
+            content = f"{agent['name']} 与 {target['name']} 在{loc}探讨：{dialogue}"
+            importance = max(importance, 2)
+        else:
+            content = f"{agent['name']} 在{loc}围绕校园状态展开交流，目标：{goal}。"
         event_type = "world_agent_chat"
-        social_effect = apply_runtime_social_effect(conn, agent, action, agent["location"], day)
     elif action == "reflect":
-        content = f"{agent['name']} 在{agent['location']}整理当前节奏和个人状态，目标：{goal}。"
+        content = f"{agent['name']} 在{agent['location']}整理当前节奏和个人状态，思考总结：{goal}。"
         event_type = "world_agent_reflect"
     else:
         focus = destination if destination in VALID_LOCATIONS else "校园状态"

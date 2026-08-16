@@ -144,7 +144,7 @@ def body_action_checks(conn, resident_id, action):
             "health_too_low",
             "健康状态不足以执行高强度行动",
         )
-    if action not in {"consume", "rest", "move"}:
+    if action not in {"consume", "rest", "move", "hydrate", "observe"}:
         add(
             "body_hunger",
             float(state["hunger"]) < 94,
@@ -153,7 +153,7 @@ def body_action_checks(conn, resident_id, action):
             "too_hungry",
             "饥饿过高，需要先补充食物",
         )
-    if action in {"attend_class", "collaborate", "observe"}:
+    if action in {"attend_class", "collaborate"}:
         add(
             "body_attention",
             float(state["attention"]) >= 15,
@@ -172,10 +172,11 @@ ACTION_EFFECTS = {
     # is the ordinary full-meal baseline; an acutely hungry resident gets a
     # larger, still bounded recovery instead of needing several fictional
     # meals across different ticks.
-    "consume": {"hunger": -45, "hydration": -14, "nutrition": 24, "fatigue": -4, "stress": -3, "attention": 6, "health": 3, "activity_load": -5},
-    "hydrate": {"hydration": -42, "stress": -1, "attention": 3},
-    "rest": {"fatigue": -30, "sleep_debt": -18, "stress": -10, "attention": 16, "health": 12, "activity_load": -26, "illness_load": -4},
-    "reflect": {"stress": -12, "attention": 8, "social_energy": 3},
+    "consume": {"hunger": -45, "hydration": -14, "nutrition": 24, "fatigue": -4, "stress": -3, "attention": 15, "health": 3, "activity_load": -5},
+    "hydrate": {"hydration": -42, "stress": -3, "attention": 22},
+    "rest": {"fatigue": -30, "sleep_debt": -18, "stress": -10, "attention": 25, "health": 12, "activity_load": -26, "illness_load": -4},
+    "observe": {"attention": 12, "stress": -3},
+    "reflect": {"stress": -12, "attention": 15, "social_energy": 3},
     "chat": {"stress": -3, "social_energy": 9},
     "club_activity": {"fatigue": 10, "stress": -8, "health": 2, "hydration": 6, "activity_load": 15},
     "conflict": {"fatigue": 6, "stress": 18, "social_energy": -10, "activity_load": 8},

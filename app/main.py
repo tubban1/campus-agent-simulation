@@ -2175,7 +2175,24 @@ def should_generate_observed_agent_detail(conn, resident_id, world_time):
 def normalize_runtime_decision(payload, fallback_step, fallback_location, fallback_goal):
     payload = payload if isinstance(payload, dict) else {}
     action = str(payload.get("action") or fallback_step.get("action") or "observe").strip().lower()
-    if action not in WORLD_AUTONOMOUS_ACTIONS:
+    action_aliases = {
+        "hydrate": "consume",
+        "drink": "consume",
+        "eat": "consume",
+        "buy": "consume",
+        "shopping": "consume",
+        "study": "attend_class",
+        "work": "reflect",
+        "sleep": "rest",
+        "nap": "rest",
+        "walk": "move",
+        "goto": "move",
+        "talk": "chat",
+        "speak": "chat",
+    }
+    if action in action_aliases:
+        action = action_aliases[action]
+    elif action not in WORLD_AUTONOMOUS_ACTIONS:
         action = "observe"
     location = str(payload.get("location") or fallback_step.get("location") or fallback_location or "校园").strip()
     if location not in VALID_LOCATIONS:
@@ -3090,9 +3107,52 @@ def get_campus_spaces():
         return get_space_snapshot(conn)
 
 
+def get_space_activity_log(location: str, limit: int = 30):
+    with get_connection() as conn:
+        ensure_space_system(conn)
+        ensure_world_runtime_tables(conn)
+
+        snapshot = get_space_snapshot(conn)
+        space_info = next((s for s in snapshot.get("spaces", []) if s.get("location") == location or s.get("name") == location), None)
+        if not space_info:
+            space_info = {"location": location, "name": location, "status": "开放", "crowd_percent": 50, "actual_agents": 0}
+
+        agent_rows = conn.execute(
+            """
+            SELECT id, name, role, location, goal
+            FROM residents
+            WHERE location = ? OR location LIKE ?
+            """,
+            (location, f"%{location}%"),
+        ).fetchall()
+        current_agents = rows_to_dicts(agent_rows)
+
+        log_rows = conn.execute(
+            """
+            SELECT e.id, e.day, e.slot, e.event_type, e.resident_id, e.location,
+                   e.title, e.content, e.payload, e.created_at, e.occurred_at,
+                   r.name AS resident_name, r.role AS resident_role
+            FROM world_event_stream e
+            LEFT JOIN residents r ON r.id = e.resident_id
+            WHERE e.location = ? OR e.location LIKE ? OR ? LIKE ('%' || e.location || '%')
+            ORDER BY e.id DESC
+            LIMIT ?
+            """,
+            (location, f"%{location}%", location, limit),
+        ).fetchall()
+
+        return {
+            "location": location,
+            "space_info": space_info,
+            "current_agents": current_agents,
+            "activity_timeline": rows_to_dicts(log_rows),
+        }
+
+
 app.state.get_inventory = get_inventory
 app.state.get_today_environment = get_today_environment
 app.state.get_campus_spaces = get_campus_spaces
+app.state.get_space_activity_log = get_space_activity_log
 
 
 def set_space_status(location: str, payload: SpaceStatusRequest):

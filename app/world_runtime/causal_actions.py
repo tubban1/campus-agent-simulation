@@ -31,15 +31,18 @@ def evaluate_world_action_preconditions(conn, resident_id, action_type, location
     market_choice = None
     body_state = get_body_state(conn, resident_id) or {}
     critical_recovery = (
-        action_type == "consume"
-        and float(body_state.get("hunger") or 0) >= 90
-    ) or (
-        action_type == "rest"
+        action_type in {"consume", "hydrate"}
         and (
-            float(body_state.get("fatigue") or 0) >= 88
-            or float(body_state.get("sleep_debt") or 0) >= 85
-            or float(body_state.get("health", 100) if body_state.get("health") is not None else 100) < 35
-            or float(body_state.get("attention", 100) if body_state.get("attention") is not None else 100) < 15
+            float(body_state.get("hunger") or 0) >= 75
+            or float(body_state.get("hydration", 25) if body_state.get("hydration") is not None else 25) >= 60
+        )
+    ) or (
+        action_type in {"rest", "observe"}
+        and (
+            float(body_state.get("fatigue") or 0) >= 75
+            or float(body_state.get("sleep_debt") or 0) >= 75
+            or float(body_state.get("health", 100) if body_state.get("health") is not None else 100) < 45
+            or float(body_state.get("attention", 100) if body_state.get("attention") is not None else 100) < 25
         )
     )
 
@@ -290,6 +293,9 @@ def begin_world_action_execution(
     settlement_mode="active",
 ):
     rule = get_world_action_rule(conn, action_type)
+    if not rule:
+        action_type = "observe"
+        rule = get_world_action_rule(conn, "observe")
     if not rule:
         raise ValueError(f"未找到行动规则：{action_type}")
     if settlement_mode == "passive":

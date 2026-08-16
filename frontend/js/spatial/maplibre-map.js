@@ -496,8 +496,9 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
                 <div><strong>运营状态：</strong><span style="color:#00e676;font-weight:bold;">${escapeHtml(nodeObj.status || "正常开放")}</span></div>
                 <div><strong>实时物理状态：</strong>${escapeHtml(props.access_status || "open")} · 拥挤 ${Math.round(Number(props.crowd_density || 0) * 100)}% · 噪声 ${Math.round(Number(props.noise_db || 0))}dB</div>
               </div>
-              <div class="popup-actions">
+              <div class="popup-actions" style="display:flex;flex-direction:column;gap:6px;">
                 <button onclick="window.selectNodeDestination('${nodeObj.id}')">🎯 设为 Agent 目标导航点</button>
+                <button onclick="if(typeof window.openLocationDetails==='function')window.openLocationDetails('${escapeHtml(nodeObj.name)}')">📜 查看地点交互历史（谁何时做了什么）</button>
               </div>
             </div>
           `;
@@ -672,7 +673,7 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
 
 export function refreshMapLibreMarkers() {
   if (maplibreInstance) {
-    initOrUpdateMapLibreMap(spatialWorldsCache);
+    initOrUpdateMapLibreMap(WorldStore.spatialWorlds || []);
   }
 }
 

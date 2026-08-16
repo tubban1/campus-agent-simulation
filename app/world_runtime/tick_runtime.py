@@ -266,6 +266,28 @@ def _advance_world_tick_locked(reason="background"):
                 failed=failed,
                 completed_at=completed_at,
             )
+
+            # 自动刷新环境 real_time 维度时间与状态
+            sync_fn = globals().get("sync_world_time_environment") or pre_agent.get("sync_world_time_environment")
+            if sync_fn:
+                try:
+                    sync_fn(conn, world_time)
+                except Exception as sync_err:
+                    logger.warning("Failed to sync world_time to environment: %s", sync_err)
+
+            # 唤醒新闻编辑 Agent，自动搜集精彩动态并发布最新新闻
+            news_fn = globals().get("publish_agent_news")
+            if not news_fn:
+                import app.main as main_mod
+                news_fn = getattr(main_mod, "publish_agent_news", None)
+            if news_fn and results:
+                try:
+                    published_news = news_fn(conn, day, results)
+                    if published_news:
+                        logger.info("Campus news editor published %d news items for day %s", len(published_news), day)
+                except Exception as news_err:
+                    logger.warning("Auto news publishing failed: %s", news_err)
+
             finish_event = append_world_event(
                 conn,
                 "world_tick_complete",

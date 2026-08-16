@@ -71,3 +71,8 @@ def get_today_environment(request: Request):
 @router.get("/api/campus/spaces")
 def get_campus_spaces(request: Request):
     return request.app.state.get_campus_spaces()
+
+
+@router.get("/api/campus/spaces/{location}/activity-log")
+def get_space_activity_log(location: str, request: Request, limit: int = 30):
+    return request.app.state.get_space_activity_log(location, limit)

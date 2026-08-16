@@ -100,6 +100,10 @@ def derive_environment_from_real_time(values, now=None):
     activity_heat = 75 if semester_stage == "活动周" else int(values.get("activity_heat", 50))
     if is_weekend:
         activity_heat = min(100, activity_heat + 10)
+    if 0 <= hour < 6:
+        activity_heat = max(10, activity_heat // 4)
+    elif 6 <= hour < 8:
+        activity_heat = max(15, activity_heat // 2)
 
     values.update({
         "exam_pressure": clamp(exam_pressure, 0, 100),
@@ -122,14 +126,14 @@ def derive_environment_from_real_time(values, now=None):
     values["resource_pressure"] = clamp((canteen_crowd + library_crowd + classroom_crowd) // 3, 0, 100)
     values["safety_level"] = clamp(95 - rainfall // 6 - int(wind_speed) // 4 - values["campus_flow"] // 10, 30, 100)
 
-    if weather in {"大雨", "暴雨", "大雪", "雷雨"} or wind_speed >= 40:
-        values["campus_mood"] = "严酷"
-    elif weather in {"小雨", "中雨", "小雪", "雾", "闷热"}:
-        values["campus_mood"] = "低落"
-    elif values["exam_pressure"] >= 75:
+    if values["exam_pressure"] >= 75:
         values["campus_mood"] = "紧张"
     elif values["activity_heat"] >= 70:
         values["campus_mood"] = "活跃"
+    elif weather in {"大雨", "暴雨", "大雪", "雷雨"} or wind_speed >= 40:
+        values["campus_mood"] = "严酷"
+    elif weather in {"小雨", "中雨", "小雪", "雾", "闷热"}:
+        values["campus_mood"] = "低落"
     else:
         values["campus_mood"] = "平稳"
 

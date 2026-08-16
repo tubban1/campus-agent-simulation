@@ -26,7 +26,7 @@ def derive_environment_from_weather(base_values, *, clamp):
     values["network_status"] = "拥堵" if values["dorm_crowd"] > 75 else "稳定"
     values["safety_level"] = clamp(92 - rainfall // 8 - values["campus_flow"] // 12, 50, 100)
     values["consumption_index"] = round(max(0.5, min(1.8, 0.7 + activity_heat / 120 + values["commercial_crowd"] / 240)), 2)
-    values["campus_mood"] = "紧张" if exam_pressure > 75 else ("低落" if weather in {"小雨", "中雨", "大雨", "雷雨"} else ("活跃" if activity_heat > 70 else "平稳"))
+    values["campus_mood"] = "紧张" if exam_pressure > 75 else ("活跃" if activity_heat > 70 else ("低落" if weather in {"大雨", "暴雨", "雷雨"} else "平稳"))
     return values
 
 

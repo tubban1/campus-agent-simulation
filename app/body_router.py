@@ -86,3 +86,21 @@ def get_agent_body_state(resident_id: int):
         if not rows:
             raise HTTPException(status_code=404, detail="Agent 身体状态不存在")
         return rows[0]
+
+
+@router.post("/api/body-states/reset")
+def reset_all_body_states():
+    with get_connection() as conn:
+        if not body_runtime_available(conn):
+            raise HTTPException(status_code=409, detail="身体状态运行时尚未初始化")
+        conn.execute(
+            """
+            UPDATE agent_body_states
+            SET hunger = 0.0, fatigue = 0.0, hydration = 0.0, nutrition = 90.0,
+                stress = 0.0, attention = 100.0, health = 100.0, sleep_debt = 0.0,
+                weather_exposure = 0.0, activity_load = 0.0, illness_load = 0.0
+            """
+        )
+        conn.execute("UPDATE agent_profiles SET energy = 100")
+        conn.commit()
+        return {"status": "ok", "message": "所有 Agent 身体生理状态已成功重置恢复"}

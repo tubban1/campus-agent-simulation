@@ -685,13 +685,27 @@ function renderSpaces() {
       const ratio = capacity > 0 ? Math.min(100, Math.round(occupancy / capacity * 100)) : 0;
       return `<div class="space-item ${humanSpatialStatus(node.status) !== "开放" ? "warning" : ""}"><div class="space-top"><strong>${escapeHtml(node.name)}</strong><span class="space-state">${humanSpatialStatus(node.status)}</span></div><div class="small" style="padding:2px 0 0">${escapeHtml(spatialNodeKind(node))} · 容量 ${capacity || "未标注"} · 在场 Agent ${occupancy}</div><div class="bar"><i style="width:${ratio}%"></i></div></div>`;
     }).join("") : '<div class="empty">正在载入当前真实地理窗口的建筑与设施…</div>';
-    return;
+  } else {
+    const spaces = (WorldStore.world.spaces || {}).spaces || [];
+    $("spaceList").innerHTML = spaces.map(s => {
+      const level = Number(s.crowd_percent ?? s.occupancy ?? 0), warn = s.effective_status !== "开放" || level >= 85;
+      return `<div class="space-item ${warn ? "warning" : ""}"><div class="space-top"><strong>${s.name || s.location || "校园空间"}</strong><span class="space-state">${s.effective_status || s.status || "运行中"}</span></div><div class="small" style="padding:2px 0 0">拥挤度 ${level}% · 在场 Agent ${s.actual_agents ?? 0}</div><div class="bar"><i style="width:${Math.max(0, Math.min(100, level))}%"></i></div></div>`;
+    }).join("") || '<div class="empty">暂无空间运行数据。</div>';
   }
-  const spaces = (WorldStore.world.spaces || {}).spaces || [];
-  $("spaceList").innerHTML = spaces.map(s => {
-    const level = Number(s.crowd_percent ?? s.occupancy ?? 0), warn = s.effective_status !== "开放" || level >= 85;
-    return `<div class="space-item ${warn ? "warning" : ""}"><div class="space-top"><strong>${s.name || s.location || "校园空间"}</strong><span class="space-state">${s.effective_status || s.status || "运行中"}</span></div><div class="small" style="padding:2px 0 0">拥挤度 ${level}% · 在场 Agent ${s.actual_agents ?? 0}</div><div class="bar"><i style="width:${Math.max(0, Math.min(100, level))}%"></i></div></div>`;
-  }).join("") || '<div class="empty">暂无空间运行数据。</div>';
+  $("spaceList").querySelectorAll(".space-item").forEach((card, index) => {
+    card.style.cursor = "pointer";
+    card.onclick = () => {
+      if (isRealSpatialWorld()) {
+        const places = realCampusPlaces(16);
+        const place = places[index];
+        if (place) openLocationDetails(place.name);
+      } else {
+        const spaces = (WorldStore.world.spaces || {}).spaces || [];
+        const space = spaces[index];
+        if (space) openLocationDetails(space.name || space.location);
+      }
+    };
+  });
 }
 
 function renderCampusMap() {
@@ -737,6 +751,7 @@ function renderCampusMap() {
       if (!node) return;
       touchObserverSession({ location: node.name });
       requestViewportAtMetric(node.x, node.z);
+      openLocationDetails(node.name);
     });
     return;
   }
@@ -1608,6 +1623,101 @@ function openLifeCourse() {
   loadLifeCourse();
 }
 
+let locationRequestToken = 0;
+
+async function openLocationDetails(locationName) {
+  if (!locationName) return;
+  const overlay = $("locationOverlay");
+  if (overlay) overlay.classList.add("open");
+  if ($("locationTitle")) $("locationTitle").textContent = locationName;
+  if ($("locationSubtitle")) $("locationSubtitle").textContent = `正在载入「${locationName}」的时空交互记录…`;
+  if ($("locationMetaCard")) $("locationMetaCard").innerHTML = '<div class="empty">正在读取地点概况与在场 Agent…</div>';
+  if ($("locationTimeline")) $("locationTimeline").innerHTML = '<div class="empty">正在载入该地点的历史交互流水…</div>';
+
+  locationRequestToken += 1;
+  const token = locationRequestToken;
+
+  try {
+    const res = await fetch(`/api/campus/spaces/${encodeURIComponent(locationName)}/activity-log`);
+    if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+    const data = await res.json();
+    if (token !== locationRequestToken) return;
+    renderLocationDetails(data);
+  } catch (err) {
+    if (token !== locationRequestToken) return;
+    if ($("locationSubtitle")) $("locationSubtitle").textContent = `读取失败：${err.message}`;
+    if ($("locationMetaCard")) $("locationMetaCard").innerHTML = `<div class="empty">暂时无法读取「${escapeHtml(locationName)}」的概况数据。</div>`;
+    if ($("locationTimeline")) $("locationTimeline").innerHTML = `<div class="empty">暂时无法读取交互历史，请稍后再试。</div>`;
+  }
+}
+
+function renderLocationDetails(data) {
+  const locName = data.location || "校园地点";
+  const spaceInfo = data.space_info || {};
+  const currentAgents = data.current_agents || [];
+  const timeline = data.activity_timeline || [];
+
+  if ($("locationTitle")) $("locationTitle").textContent = locName;
+  if ($("locationSubtitle")) $("locationSubtitle").textContent = `共 ${timeline.length} 条历史交互记录 · 当前在场 ${currentAgents.length} 位 Agent`;
+
+  const crowd = spaceInfo.crowd_percent ?? spaceInfo.occupancy ?? 50;
+  const status = spaceInfo.effective_status || spaceInfo.status || "正常开放";
+  const capacity = spaceInfo.capacity || "未标注";
+
+  if ($("locationMetaCard")) {
+    $("locationMetaCard").innerHTML = `
+      <div class="location-meta-grid">
+        <div class="location-meta-item"><strong>${escapeHtml(status)}</strong><span>运营状态</span></div>
+        <div class="location-meta-item"><strong>${crowd}%</strong><span>拥挤百分比</span></div>
+        <div class="location-meta-item"><strong>${capacity}</strong><span>场地核定容量</span></div>
+        <div class="location-meta-item"><strong>${currentAgents.length} 位</strong><span>实时驻留 Agent</span></div>
+      </div>
+      <div class="location-present-agents">
+        <span style="font-size:12px;color:#657892;font-weight:600">当前在场：</span>
+        ${currentAgents.length ? currentAgents.map(a => {
+          const avatar = avatarFiles[(Number(a.id || 1) - 1 + avatarFiles.length) % avatarFiles.length];
+          return `<button class="location-agent-chip" onclick="window.openProfileById(${a.id})"><img src="/avatars/${avatar}" alt="${escapeHtml(a.name)}"><strong>${escapeHtml(a.name)}</strong><small style="color:#657892">· ${escapeHtml(a.role || "Agent")}</small></button>`;
+        }).join("") : '<span style="font-size:12px;color:#99aab8">暂无驻留 Agent</span>'}
+      </div>
+    `;
+  }
+
+  if ($("locationTimeline")) {
+    if (!timeline.length) {
+      $("locationTimeline").innerHTML = '<div class="empty">该地点近期暂无登记的交互记录。</div>';
+      return;
+    }
+    $("locationTimeline").innerHTML = timeline.map(item => {
+      const typeClass = item.event_type === "agent_chat" ? "chat-action" : (item.event_type?.includes("warning") ? "notice-action" : "tick-action");
+      const name = item.resident_name || (item.resident_id ? `Agent ${item.resident_id}` : "校园公开");
+      const role = item.resident_role ? ` (${item.resident_role})` : "";
+      const timeStr = item.occurred_at || item.created_at || "";
+      const dayStr = item.day ? `第 ${item.day} 天` : "";
+      const slotStr = item.slot ? ` · ${item.slot}` : "";
+      const titleStr = item.title || item.event_type || "交互动态";
+      const contentStr = item.content || item.display_content || "";
+
+      return `
+        <article class="location-timeline-item ${typeClass}">
+          <div class="location-timeline-head">
+            <strong>${escapeHtml(name)}${escapeHtml(role)} · ${escapeHtml(titleStr)}</strong>
+            <span class="location-timeline-time">${escapeHtml(dayStr)}${escapeHtml(slotStr)} ${formatWorldTimestamp(timeStr)}</span>
+          </div>
+          <div class="location-timeline-content">${escapeHtml(contentStr)}</div>
+        </article>
+      `;
+    }).join("");
+  }
+}
+
+function openProfileById(id) {
+  const index = WorldStore.agents.findIndex(agent => Number(agent.id) === Number(id));
+  if (index >= 0) openProfile(index);
+}
+
+window.openLocationDetails = openLocationDetails;
+window.openProfileById = openProfileById;
+
 function openProfile(i) {
   WorldStore.selected = i;
   const a = WorldStore.agents[i];
@@ -1686,6 +1796,10 @@ document.addEventListener("DOMContentLoaded", () => {
   if ($("newspaperOverlay")) $("newspaperOverlay").onclick = event => {
     if (event.target === $("newspaperOverlay")) $("newspaperOverlay")?.classList.remove("open");
   };
+  if ($("closeLocation")) $("closeLocation").onclick = () => $("locationOverlay")?.classList.remove("open");
+  if ($("locationOverlay")) $("locationOverlay").onclick = event => {
+    if (event.target === $("locationOverlay")) $("locationOverlay")?.classList.remove("open");
+  };
   if ($("paperPrev")) $("paperPrev").onclick = () => loadNewsPosts(WorldStore.newspaperArchive.previous_day);
   if ($("paperToday")) $("paperToday").onclick = () => loadNewsPosts();
   if ($("paperNext")) $("paperNext").onclick = () => loadNewsPosts(WorldStore.newspaperArchive.next_day);
@@ -1697,7 +1811,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if ($("closeLifeCourse")) $("closeLifeCourse").onclick = () => $("lifeCourseOverlay").classList.remove("open");
   if ($("lifeCourseLoadMore")) $("lifeCourseLoadMore").onclick = () => loadLifeCourse({ older: true });
   document.querySelectorAll("[data-life-view]").forEach(button => button.onclick = () => setLifeCourseView(button.dataset.lifeView));
-  if ($("lifeCourseOverlay")) $("lifeCourseOverlay").onclick = event => { if (event.target === $("lifeCourseOverlay")) $("lifeCourseOverlay").classList.remove("open"); };
+  if ($("lifeCourseOverlay")) $("lifeCourseOverlay").classList.remove("open");
   if ($("profileOverlay")) $("profileOverlay").onclick = event => { if (event.target === $("profileOverlay")) $("profileOverlay").classList.remove("open"); };
   if ($("cameraZoomIn")) $("cameraZoomIn").onclick = () => zoomActiveMap(1);
   if ($("cameraZoomOut")) $("cameraZoomOut").onclick = () => zoomActiveMap(-1);
@@ -1706,7 +1820,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
-    ["profileOverlay", "lifeCourseOverlay", "newspaperOverlay"].forEach(id => $(id)?.classList.remove("open"));
+    ["profileOverlay", "lifeCourseOverlay", "newspaperOverlay", "locationOverlay"].forEach(id => $(id)?.classList.remove("open"));
   });
 
   // The initial world catalogue and observer state can arrive in parallel,

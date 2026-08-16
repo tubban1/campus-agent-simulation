@@ -223,21 +223,21 @@ def record_learning(conn, resident_id, action, outcome, score_delta, lesson):
 
 def action_for_context(role, location, hour, conn=None, env=None, agent=None):
     options = []
+    from app.spatial.location_catalog import _categories
+    cats = _categories(location, set())
     if 0 <= hour < 6:
-        options = [("rest", 7), ("reflect", 3)] if location == "宿舍区" else [("observe", 4), ("late", 1)]
-    elif location == "宿舍区":
+        options = [("rest", 7), ("reflect", 3)] if "rest" in cats else [("observe", 4), ("late", 1)]
+    elif "rest" in cats:
         options = [("rest", 4), ("reflect", 3), ("observe", 1)] if hour >= 21 or hour < 7 else [("reflect", 3), ("observe", 2)]
-    elif location == "教学楼":
+    elif "study" in cats:
         options = [("attend_class", 5), ("collaborate", 2), ("late", 0.5), ("observe", 1)]
-    elif location == "图书馆":
-        options = [("observe", 4), ("collaborate", 1.2), ("reflect", 1)]
-    elif location == "食堂":
+    elif "consume" in cats:
         options = [("queue", 3), ("consume", 4), ("chat", 2), ("conflict", 0.2)]
-    elif location == "商业街":
+    elif "business" in cats:
         options = [("consume", 4), ("queue", 1), ("chat", 2), ("conflict", 0.25)]
-    elif location == "操场":
+    elif "activity" in cats:
         options = [("club_activity", 4), ("chat", 2), ("collaborate", 1), ("observe", 1)]
-    elif location == "校务处":
+    elif "service" in cats:
         options = [("request_leave", 1.5), ("collaborate", 3), ("observe", 2)]
     else:
         options = [("observe", 2), ("move", 1)]
@@ -285,34 +285,37 @@ def build_rule_based_plan(conn, resident, window_start, window_end, world_time=N
         intent = "整理一天收获并进行轻量社交"
     steps = []
     offsets = [45, 255, 435]
-    from app.spatial.location_catalog import choose_weighted_real_location
+    from app.spatial.location_catalog import best_real_location, choose_weighted_real_location
     for index, offset in enumerate(offsets):
         step_time = window_start + timedelta(minutes=offset + random.randint(-20, 20))
         if step_time >= window_end:
             step_time = window_end - timedelta(minutes=30)
         hour = step_time.hour
         res_loc = dict(resident).get("location", "")
+        def _resolve_loc(act):
+            return choose_weighted_real_location(conn, resident["id"], act, hour=hour, current_location=res_loc) or best_real_location(conn, act, current_location=res_loc) or res_loc or "校园"
+
         if 0 <= hour < 6:
             action = "rest"
-            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "宿舍区"
+            location = _resolve_loc(action)
         elif role_kind == "teacher":
             action = "attend_class"
-            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "教学楼"
+            location = _resolve_loc(action)
         elif role_kind == "business":
             action = "consume"
-            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "商业街"
+            location = _resolve_loc(action)
         elif role_kind == "service":
             action = "observe"
-            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "校务处"
+            location = _resolve_loc(action)
         elif 11 <= hour < 14:
             action = "consume"
-            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "食堂"
+            location = _resolve_loc(action)
         elif 8 <= hour < 18:
             action = "attend_class"
-            location = choose_weighted_real_location(conn, resident["id"], action, hour=hour, current_location=res_loc) or "教学楼"
+            location = _resolve_loc(action)
         else:
             action = "reflect"
-            location = res_loc or "宿舍区"
+            location = res_loc or _resolve_loc(action)
         steps.append(
             {
                 "time": step_time.strftime("%H:%M"),
@@ -585,18 +588,38 @@ def perceive_environment(conn, resident_id):
     module_state = get_agent_module_state(conn, resident_id)
     schedule_context = module_state["modules"]["Schedule"]["current_schedule"]
     location = resident["location"]
-    crowd_by_location = {
-        "教学楼": env.get("classroom_crowd", 50),
-        "图书馆": env.get("library_crowd", 50),
-        "食堂": env.get("canteen_crowd", 50),
-        "宿舍区": env.get("dorm_crowd", 50),
-        "操场": env.get("playground_crowd", 50),
-        "商业街": env.get("commercial_crowd", 50),
-        "校务处": env.get("campus_flow", 50),
-    }
-    local_crowd = crowd_by_location.get(location, env.get("campus_flow", 50))
     space_snapshot = get_space_snapshot(conn, day)
     current_space = next((space for space in space_snapshot["spaces"] if space["location"] == location), None)
+    if not current_space:
+        current_space = next(
+            (
+                space
+                for space in space_snapshot["spaces"]
+                if location and (location in space["location"] or space["location"] in location)
+            ),
+            None,
+        )
+
+    if current_space and "crowd_percent" in current_space:
+        local_crowd = current_space["crowd_percent"]
+    elif current_space and "demand_percent" in current_space:
+        local_crowd = current_space["demand_percent"]
+    else:
+        from app.spatial.location_catalog import _categories
+        cats = _categories(location, set())
+        category_crowd_map = {
+            "consume": env.get("canteen_crowd", 50),
+            "study": env.get("classroom_crowd", env.get("library_crowd", 50)),
+            "rest": env.get("dorm_crowd", 50),
+            "activity": env.get("playground_crowd", 50),
+            "business": env.get("commercial_crowd", 50),
+            "service": env.get("campus_flow", 50),
+        }
+        local_crowd = env.get("campus_flow", 50)
+        for cat in cats:
+            if cat in category_crowd_map:
+                local_crowd = category_crowd_map[cat]
+                break
     from app.spatial.location_catalog import rank_real_location_options
     candidate_options = rank_real_location_options(conn, resident_id, "consume", hour=get_environment_hour(env), weather=env.get("weather", ""))
     nearby_candidate_pois = [
@@ -699,7 +722,7 @@ def generate_observed_agent_detail(conn, agent, step, world_time, tick_id, base_
         return None
     model_name = os.getenv("LLM_MODEL") or os.getenv("LLM_API_MODEL") or "configured-llm"
     prompt = f"""
-你是校园平行世界的局部观察镜头。用户正在观察这个 Agent，请生成一条短小、具体、可被记录的观察细节。
+你是World2的局部观察镜头。用户正在观察这个 Agent，请生成一条短小、具体、可被记录的观察细节。
 
 世界时间：{world_time.strftime('%Y-%m-%d %H:%M')}
 Agent：{agent['name']}，{agent['role']}
@@ -747,47 +770,52 @@ Agent：{agent['name']}，{agent['role']}
 
 
 def build_autonomous_tick_decision(conn, agent, perception, step):
-    if step.get("plan_state") != "due":
-        return fallback_runtime_decision(agent, step, "计划步骤尚未到点或已完成，按当前位置进行轻量观察。", "rule-waiting-v1")
-    runtime_llm_enabled = os.getenv("WORLD_RUNTIME_USE_LLM", "false").strip().lower() in {
+    import json
+    runtime_llm_enabled = os.getenv("WORLD_RUNTIME_USE_LLM", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
     if not runtime_llm_enabled:
         if not is_llm_configured():
             return fallback_runtime_decision(agent, step, "当前世界使用规则决策，按个人计划继续行动。", "rule-unconfigured-v1")
         return fallback_runtime_decision(agent, step, "后台世界循环使用规则决策，按个人计划继续行动。", "rule-runtime-v1")
-    if not consume_auto_model_budget(conn, "autonomous_decision", resident_id=agent["id"]):
+    budget_fn = globals().get("consume_auto_model_budget")
+    if budget_fn and not budget_fn(conn, "autonomous_decision", resident_id=agent["id"]):
         if not is_llm_configured():
             return fallback_runtime_decision(agent, step, "当前世界使用规则决策，按个人计划继续行动。", "rule-unconfigured-v1")
         return fallback_runtime_decision(agent, step, "自动模型预算不足，按原计划执行。", "rule-budget-fallback-v1")
+
+    # 1. 通用生理矢量状态 (Generic Physical Vector)
+    body_row = conn.execute("SELECT * FROM agent_body_states WHERE resident_id = ?", (agent["id"],)).fetchone()
+    body_state = dict(body_row) if body_row else {}
+
+    # 2. 通用 Agent 心智循环 Prompt (Generic Agent Mind Prompt)
     model_name = os.getenv("LLM_MODEL") or os.getenv("LLM_API_MODEL") or "configured-llm"
     prompt = f"""
-你是校园平行世界中一个 Agent 的局部自主循环决策器。
+你是World2平行世界中一个具备完全独立心智的 Agent 循环决策器。
+请根据你的【个人身份与目标】、【当下生理状态】、【环境与社交感知】以及【参考计划】，自主推理做出本 tick 的理性决策。
 
-请根据当前环境、近期事件、Agent 长期目标和 8 小时计划步骤，决定这个 tick 是否继续计划、轻微调整、响应事件或休息。
+Agent 核心档案:
+- ID: {agent['id']}
+- 姓名: {agent['name']}
+- 身份角色: {agent['role']}
+- 当前位置: {agent['location']}
+- 长期使命与目标: {agent['goal']}
 
-Agent:
-- id: {agent['id']}
-- name: {agent['name']}
-- role: {agent['role']}
-- current_location: {agent['location']}
-- long_goal: {agent['goal']}
+当下生理与精神矢量:
+{json_dumps(body_state, ensure_ascii=False) if 'json_dumps' in globals() else json.dumps(body_state, ensure_ascii=False)}
 
-感知上下文：
-{json_dumps(perception, ensure_ascii=False)}
+环境与社交感知上下文:
+{json_dumps(perception, ensure_ascii=False) if 'json_dumps' in globals() else json.dumps(perception, ensure_ascii=False)}
 
-现实约束：
-- 必须尊重当前时间段、空间开放时间、天气和拥挤度。
-- 深夜学生通常在宿舍区，食堂、商业街、校务处等关闭或低活跃空间不应成为普通目的地。
-- 行动可以有随机性，可以轻微偏离计划，但偏离需要有可解释原因。
-- 如果计划不合时宜，应选择 rest 或 adjust，而不是机械执行。
+参考计划步骤 (仅供参考，可以自由调整或忽略):
+{json_dumps(step, ensure_ascii=False) if 'json_dumps' in globals() else json.dumps(step, ensure_ascii=False)}
 
-只返回 JSON，不要解释。格式：
+请综合考量个人目标、身体状况、环境与社交情境，自主做出符合逻辑的决策。只返回纯 JSON：
 {{
   "action": "move|observe|chat|reflect|attend_class|queue|consume|rest|club_activity|conflict|collaborate|late|request_leave",
-  "location": "只能从 {list(VALID_LOCATIONS)} 中选择",
-  "goal": "本 tick 的具体目标，80 字以内",
-  "reason": "为什么这样做，100 字以内",
+  "location": "只能从 {list(globals().get('VALID_LOCATIONS', []))} 中选择",
+  "goal": "本 tick 的自主目标，80 字以内",
+  "reason": "你做出该决定的完整自主思考逻辑与动机（内心独白），120 字以内",
   "plan_relation": "continue|adjust|respond|rest"
 }}
 """
@@ -801,14 +829,14 @@ Agent:
             status="success",
             resident_id=agent["id"],
             model_name=model_name,
-            prompt_version="autonomous-loop-v2",
+            prompt_version="autonomous-loop-v3",
             input_tokens=max(1, len(prompt) // 4),
             output_tokens=max(1, len(raw) // 4),
         )
         return decision
     except Exception as exc:
         logger.warning("Autonomous tick decision failed for resident %s", agent["id"], exc_info=True)
-        log_model_call(conn, "autonomous_decision", status=f"failed:{type(exc).__name__}", resident_id=agent["id"], model_name=model_name, prompt_version="autonomous-loop-v2")
+        log_model_call(conn, "autonomous_decision", status=f"failed:{type(exc).__name__}", resident_id=agent["id"], model_name=model_name, prompt_version="autonomous-loop-v3")
         return fallback_runtime_decision(agent, step, "自主决策失败，按原计划执行。", "rule-error-fallback-v1")
 
 
@@ -1024,7 +1052,7 @@ def agent_newspaper_posts(day: Optional[int] = None):
 
         posts = conn.execute(
             """
-            SELECT p.day, p.resident_id, r.name, r.role, p.source_slot,
+            SELECT p.id, p.day, p.resident_id, r.name, r.role, p.source_slot,
                    p.source_event_id, p.news_value, p.headline, p.content, p.created_at
             FROM agent_news_posts p
             JOIN residents r ON r.id = p.resident_id

@@ -942,7 +942,8 @@ def apply_wellbeing_priority_to_decision(conn, agent, decision, world_time):
         is_location_open=is_location_open_at_hour,
     )
     if hunger_instruction:
-        current_energy = int(agent.get("energy") or 0)
+        profile = conn.execute("SELECT energy FROM agent_profiles WHERE resident_id = ?", (agent["id"],)).fetchone()
+        current_energy = int(profile["energy"]) if profile and profile["energy"] is not None else int(agent.get("energy") or 100)
         if (
             hunger_instruction["location"] != agent["location"]
             and current_energy < 8
@@ -984,12 +985,12 @@ def apply_wellbeing_priority_to_decision(conn, agent, decision, world_time):
             "睡眠债过高会持续拖累健康与注意力，先补充睡眠。",
         )
 
-    if attention < 15 and action in {"attend_class", "collaborate", "observe"}:
+    if attention < 15 and action in {"attend_class", "collaborate"}:
         return recovery_decision(
             "rest",
-            "宿舍区",
-            "注意力不足，先恢复后再继续学习或协作",
-            "注意力已低于可靠行动阈值，先进入恢复动作。",
+            agent["location"],
+            "注意力不足，优先在当前区域休息补充恢复",
+            "注意力较低，先在当前环境进行轻量休息与补充，恢复后再继续原计划。",
         )
 
     return decision
