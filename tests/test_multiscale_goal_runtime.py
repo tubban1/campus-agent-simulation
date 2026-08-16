@@ -58,7 +58,9 @@ class MultiscaleGoalRuntimeTest(unittest.TestCase):
         )
 
     def ensure_plan(self):
-        with patch.object(main, "build_llm_action_plan", return_value=None):
+        with patch.object(main, "build_llm_action_plan", return_value=None), patch(
+            "app.world_runtime.planning_decision.build_llm_action_plan", return_value=None
+        ):
             return main.ensure_current_action_plans(self.conn, self.world_time)
 
     def test_plan_execution_updates_all_goal_horizons_and_trajectory(self):

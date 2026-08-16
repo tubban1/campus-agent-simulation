@@ -635,6 +635,67 @@ CREATE INDEX IF NOT EXISTS idx_trajectory_episodes_goal ON trajectory_episodes(g
 CREATE UNIQUE INDEX IF NOT EXISTS idx_trajectory_episodes_unique_goal ON trajectory_episodes(resident_id, goal_id, horizon);
 """
 
+LOCAL_PERCEPTION_SQL = """
+CREATE TABLE IF NOT EXISTS agent_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observer_resident_id INTEGER NOT NULL,
+    tick_id INTEGER,
+    source_event_id INTEGER,
+    origin_node_id INTEGER,
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    modality TEXT NOT NULL,
+    fact_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    distance_meters REAL,
+    confidence INTEGER NOT NULL,
+    error_margin REAL NOT NULL,
+    observed_at TEXT NOT NULL,
+    branch_key TEXT NOT NULL DEFAULT 'main',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (observer_resident_id) REFERENCES residents(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_belief_states (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resident_id INTEGER NOT NULL,
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    belief_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    confidence INTEGER NOT NULL,
+    last_observation_id INTEGER,
+    evidence_count INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'active',
+    branch_key TEXT NOT NULL DEFAULT 'main',
+    first_formed_at TEXT NOT NULL,
+    last_updated_at TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE CASCADE,
+    FOREIGN KEY (last_observation_id) REFERENCES agent_observations(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_spatial_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resident_id INTEGER NOT NULL,
+    observation_id INTEGER NOT NULL,
+    node_id INTEGER,
+    memory_type TEXT NOT NULL DEFAULT 'episodic',
+    summary TEXT NOT NULL,
+    salience INTEGER NOT NULL DEFAULT 50,
+    confidence INTEGER NOT NULL DEFAULT 50,
+    valence INTEGER NOT NULL DEFAULT 0,
+    visit_count INTEGER NOT NULL DEFAULT 1,
+    last_recalled_at TEXT,
+    formed_at TEXT NOT NULL,
+    branch_key TEXT NOT NULL DEFAULT 'main',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE CASCADE,
+    FOREIGN KEY (observation_id) REFERENCES agent_observations(id) ON DELETE CASCADE
+);
+"""
+
 ROADMAP2_OBSERVER_SQL = """
 CREATE TABLE IF NOT EXISTS agent_expectations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

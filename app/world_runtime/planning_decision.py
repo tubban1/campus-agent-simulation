@@ -1,6 +1,9 @@
 """Goal, planning, decision and perception runtime services."""
 
+import logging
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 _MODULE_NAME = __name__
 _DEPENDENCY_NAMES = {

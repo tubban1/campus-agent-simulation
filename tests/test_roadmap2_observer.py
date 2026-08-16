@@ -1,7 +1,9 @@
+import sqlite3
 import json
 import unittest
 
-from app.db import get_connection
+import app.main as main
+from app.models import SCHEMA_SQL
 from app.db.bootstrap_schema import (
     ensure_campus_state_table,
     ensure_roadmap2_observer_system,
@@ -23,32 +25,59 @@ from services.newspaper import audit_candidate_evidence, collect_candidates
 
 class TestRoadmap2ObserverSystem(unittest.TestCase):
     def setUp(self):
-        self.conn = get_connection()
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.executescript(SCHEMA_SQL)
         ensure_campus_state_table(self.conn, allow_ddl=True)
         ensure_social_system_tables(self.conn, allow_ddl=True)
-        ensure_space_system(self.conn, allow_ddl=True)
+        ensure_space_system(self.conn, allow_ddl=True, seed_demo_spaces=True)
+        main.ensure_world_runtime_tables(self.conn, allow_ddl=True)
         ensure_roadmap2_observer_system(self.conn, allow_ddl=True)
 
-        # Seed isolated test resident without deleting live residents
+        # Ensure spatial_nodes table exists in test memory DB
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS spatial_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                world_key TEXT NOT NULL DEFAULT 'default',
+                code TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                node_type TEXT NOT NULL DEFAULT 'building',
+                longitude REAL DEFAULT 0.0,
+                latitude REAL DEFAULT 0.0,
+                x REAL DEFAULT 0.0,
+                y REAL DEFAULT 0.0,
+                z REAL DEFAULT 0.0,
+                radius REAL DEFAULT 5.0,
+                capacity INTEGER DEFAULT 50,
+                status TEXT NOT NULL DEFAULT 'active',
+                properties TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+
+        # Seed isolated test residents without deleting live residents
         self.conn.execute(
             """
             INSERT INTO residents (id, name, role, location, personality, goal)
-            VALUES (9999, '测试苏晴', '学生', '食堂', '开朗', '好好学习')
+            VALUES
+                (9998, '测试陆明', '学生', '食堂', '冷静', '独立研究'),
+                (9999, '测试苏晴', '学生', '食堂', '开朗', '好好学习')
             ON CONFLICT (id) DO NOTHING
             """
         )
         self.conn.commit()
 
         # Seed spatial node & spatial memory for resident
+        self.conn.execute(
+            """
+            INSERT INTO spatial_nodes (id, code, name, node_type, capacity, radius, x, y, z, status)
+            VALUES (1, '食堂', '食堂', 'canteen', 50, 5.0, 0, 0, 0, 'active')
+            ON CONFLICT (id) DO NOTHING
+            """
+        )
         node_id = 1
-        if self.conn.execute("PRAGMA table_info(spatial_nodes)").fetchall():
-            row = self.conn.execute("SELECT id FROM spatial_nodes LIMIT 1").fetchone()
-            if row:
-                node_id = int(row["id"])
-            else:
-                self.conn.execute(
-                    "INSERT INTO spatial_nodes (id, code, name, node_type, capacity, radius, x, y, z, status) VALUES (1, '食堂', '食堂', 'canteen', 50, 5.0, 0, 0, 0, 'active') ON CONFLICT DO NOTHING"
-                )
 
         if self.conn.execute("PRAGMA table_info(agent_spatial_memories)").fetchall():
             obs = self.conn.execute("SELECT id FROM agent_observations WHERE observer_resident_id = 9999 LIMIT 1").fetchone()
@@ -60,30 +89,19 @@ class TestRoadmap2ObserverSystem(unittest.TestCase):
                     INSERT INTO agent_observations
                     (observer_resident_id, subject_type, subject_id, modality, fact_type, summary, confidence, error_margin, metadata, observed_at, branch_key)
                     VALUES (9999, 'location', '食堂', 'direct', 'canteen_visit', '在食堂', 90, 0.0, '{}', '2026-08-14T08:00:00', 'main')
-                    RETURNING id
                     """
-                ).fetchone()["id"]
+                ).lastrowid
             self.conn.execute(
                 """
                 INSERT INTO agent_spatial_memories
                 (resident_id, observation_id, node_id, memory_type, summary, salience, confidence, valence, visit_count, metadata, formed_at, branch_key)
                 VALUES (9999, ?, ?, 'episodic', '常常在食堂吃饭', 80, 90, 0, 1, '{}', '2026-08-14T08:00:00', 'main')
-                ON CONFLICT DO NOTHING
                 """,
                 (obs_id, node_id),
             )
         self.conn.commit()
 
     def tearDown(self):
-        self.conn.execute("DELETE FROM agent_expectations WHERE resident_id = 9999")
-        self.conn.execute("DELETE FROM continuity_observations WHERE resident_id = 9999")
-        self.conn.execute("DELETE FROM agent_hypotheses WHERE resident_id = 9999")
-        self.conn.execute("DELETE FROM agent_spatial_memories WHERE resident_id = 9999")
-        self.conn.execute("DELETE FROM agent_observations WHERE observer_resident_id = 9999")
-        self.conn.execute("DELETE FROM world_event_stream WHERE resident_id IN (9998, 9999)")
-        self.conn.execute("DELETE FROM residents WHERE id IN (9998, 9999)")
-        self.conn.execute("DELETE FROM group_pattern_candidates")
-        self.conn.commit()
         self.conn.close()
 
     def test_r2_1_subject_continuity_and_cognitive_gaps(self):

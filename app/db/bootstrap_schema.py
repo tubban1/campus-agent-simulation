@@ -17,6 +17,7 @@ from app.schema import (
     DEFAULT_SPACES,
     ENV_COLUMN_TYPES,
     EXTERNAL_INFORMATION_SQL,
+    LOCAL_PERCEPTION_SQL,
     PROFILE_COLUMN_TYPES,
     ROADMAP2_OBSERVER_SQL,
     SPACE_SYSTEM_SQL,
@@ -118,5 +119,6 @@ def ensure_external_information_system(conn, *, allow_ddl=False):
 
 def ensure_roadmap2_observer_system(conn, *, allow_ddl=False):
     if allow_ddl:
+        conn.executescript(LOCAL_PERCEPTION_SQL)
         conn.executescript(ROADMAP2_OBSERVER_SQL)
     ensure_table_columns(conn, "group_pattern_candidates", {}, allow_ddl=allow_ddl)
