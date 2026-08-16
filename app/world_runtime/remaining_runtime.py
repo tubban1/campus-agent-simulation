@@ -778,7 +778,7 @@ def build_autonomous_tick_decision(conn, agent, perception, step):
         if not is_llm_configured():
             return fallback_runtime_decision(agent, step, "当前世界使用规则决策，按个人计划继续行动。", "rule-unconfigured-v1")
         return fallback_runtime_decision(agent, step, "后台世界循环使用规则决策，按个人计划继续行动。", "rule-runtime-v1")
-    budget_fn = globals().get("consume_auto_model_budget")
+    budget_fn = consume_auto_model_budget if callable(globals().get("consume_auto_model_budget")) else None
     if budget_fn and not budget_fn(conn, "autonomous_decision", resident_id=agent["id"]):
         if not is_llm_configured():
             return fallback_runtime_decision(agent, step, "当前世界使用规则决策，按个人计划继续行动。", "rule-unconfigured-v1")
@@ -790,6 +790,7 @@ def build_autonomous_tick_decision(conn, agent, perception, step):
 
     # 2. 通用 Agent 心智循环 Prompt (Generic Agent Mind Prompt)
     model_name = os.getenv("LLM_MODEL") or os.getenv("LLM_API_MODEL") or "configured-llm"
+    valid_loc_list = list(VALID_LOCATIONS) if "VALID_LOCATIONS" in globals() else []
     prompt = f"""
 你是World2平行世界中一个具备完全独立心智的 Agent 循环决策器。
 请根据你的【个人身份与目标】、【当下生理状态】、【环境与社交感知】以及【参考计划】，自主推理做出本 tick 的理性决策。
@@ -813,7 +814,7 @@ Agent 核心档案:
 请综合考量个人目标、身体状况、环境与社交情境，自主做出符合逻辑的决策。只返回纯 JSON：
 {{
   "action": "move|observe|chat|reflect|attend_class|queue|consume|rest|club_activity|conflict|collaborate|late|request_leave",
-  "location": "只能从 {list(globals().get('VALID_LOCATIONS', []))} 中选择",
+  "location": "只能从 {valid_loc_list} 中选择",
   "goal": "本 tick 的自主目标，80 字以内",
   "reason": "你做出该决定的完整自主思考逻辑与动机（内心独白），120 字以内",
   "plan_relation": "continue|adjust|respond|rest"

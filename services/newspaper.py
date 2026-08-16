@@ -41,7 +41,7 @@ def publish_agent_news(conn, day, results, *, ensure_system, choice, summarize_a
         resident = conn.execute("SELECT id, name, role, location, goal FROM residents WHERE id = ?", (item.get("resident_id"),)).fetchone()
         if not resident: continue
         summary = summarize_action(item.get("execution", {}))
-        prompt = f"""你是《校园世界时报》的校园记者。根据以下事实写一则 90 到 150 字、具有现场感的中文校园快讯：
+        prompt = f"""你是《World2 世界时报》的校园记者。根据以下事实写一则 90 到 150 字、具有现场感的中文校园快讯：
 消息来源：{resident['name']}（{resident['role']}）
 地点：{resident['location']}
 事实：{summary}
@@ -232,7 +232,7 @@ def maybe_publish_campus_news_from_world_window(conn, world_time, tick_id=None, 
         headline = campus_news_headline(candidate["category"], candidate["location"], candidate["name"])
         content = None
         prompt = f"""
-你是《校园世界时报》的运行时观察记者。请根据校园平行世界刚出现的事实材料，写一则 90 到 150 字、具有现场感和可读性的中文校园快讯。
+你是《World2 世界时报》的运行时观察记者。请根据校园平行世界刚出现的事实材料，写一则 90 到 150 字、具有现场感和可读性的中文校园快讯。
 
 时间窗口：{source_slot}
 新闻类型：{candidate['category']}

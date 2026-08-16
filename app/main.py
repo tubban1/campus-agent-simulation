@@ -3584,7 +3584,7 @@ def newspaper_today():
             (day,),
         ).fetchall()
         return {
-            "title": f"校园世界日报 第 {day} 天",
+            "title": f"World2 世界日报 第 {day} 天",
             "environment": env,
             "events": rows_to_dicts(events),
             "agent_modules": get_all_agent_module_states(conn),

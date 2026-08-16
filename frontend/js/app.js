@@ -3,7 +3,7 @@
  * Orchestrates the 2D geographic map, Agent state polling, life-course viewer, newspaper, and admin runtime UI.
  */
 import { ApiClient } from "./api-client.js?v=20260811-profile-timeoutfix";
-import { $, colors, avatarFiles, defaultSpaces, WorldStore, escapeHtml } from "./spatial/world-store.js?v=20260814-png-avatars";
+import { $, colors, avatarFiles, getAvatarUrl, defaultSpaces, WorldStore, escapeHtml } from "./spatial/world-store.js?v=20260816-fix-click";
 import { initOrUpdateMapLibreMap, getMapLibreInstance, resolveCoordinates, refreshMapLibreMarkers } from "./spatial/maplibre-map.js?v=20260815-sync-v16";
 import {
   initThreeScene,
@@ -1489,6 +1489,8 @@ function renderProfileBase(agent) {
   const location = presence.location;
   if ($("detailName")) $("detailName").textContent = `${name}的人物介绍`;
   if ($("detailRole")) $("detailRole").textContent = `${role} · ${location}`;
+  if ($("profileAvatarImg")) $("profileAvatarImg").src = getAvatarUrl(agent);
+  if ($("profileAvatarName")) $("profileAvatarName").textContent = name;
   if ($("profileSnapshot")) $("profileSnapshot").textContent = `${name}是${role}，${presence.narrative}人物档案正在根据实时状态补全。`;
   if ($("detailState")) $("detailState").innerHTML = `<dl><div class="row"><dt>当前位置</dt><dd>${escapeHtml(location)}</dd></div><div class="row"><dt>行动状态</dt><dd>${escapeHtml(presence.status)}</dd></div><div class="row"><dt>当前目标</dt><dd>${escapeHtml(presence.target || agent.goal || agent.current_task || "自主观察与行动")}</dd></div></dl>`;
   if ($("profileCapabilities")) $("profileCapabilities").innerHTML = profileEmpty("正在读取行动条件…");
@@ -1675,9 +1677,9 @@ function renderLocationDetails(data) {
       <div class="location-present-agents">
         <span style="font-size:12px;color:#657892;font-weight:600">当前在场：</span>
         ${currentAgents.length ? currentAgents.map(a => {
-          const avatar = avatarFiles[(Number(a.id || 1) - 1 + avatarFiles.length) % avatarFiles.length];
-          return `<button class="location-agent-chip" onclick="window.openProfileById(${a.id})"><img src="/avatars/${avatar}" alt="${escapeHtml(a.name)}"><strong>${escapeHtml(a.name)}</strong><small style="color:#657892">· ${escapeHtml(a.role || "Agent")}</small></button>`;
-        }).join("") : '<span style="font-size:12px;color:#99aab8">暂无驻留 Agent</span>'}
+      const avatar = avatarFiles[(Number(a.id || 1) - 1 + avatarFiles.length) % avatarFiles.length];
+      return `<button class="location-agent-chip" onclick="window.openProfileById(${a.id})"><img src="/avatars/${avatar}" alt="${escapeHtml(a.name)}"><strong>${escapeHtml(a.name)}</strong><small style="color:#657892">· ${escapeHtml(a.role || "Agent")}</small></button>`;
+    }).join("") : '<span style="font-size:12px;color:#99aab8">暂无驻留 Agent</span>'}
       </div>
     `;
   }

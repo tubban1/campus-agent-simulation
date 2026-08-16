@@ -3,7 +3,7 @@
  * Manages 3D campus WebGL canvas, camera, lighting, 3D building meshes, agent characters, and continuous animation loop.
  */
 import * as THREE from "/three/build/three.module.js";
-import { $, colors, avatarFiles, defaultSpaces, WorldStore, escapeHtml } from "./world-store.js?v=20260814-png-avatars";
+import { $, colors, avatarFiles, getAvatarUrl, defaultSpaces, WorldStore, escapeHtml } from "./world-store.js?v=20260816-fix-click";
 
 let renderer, profileRenderer, webglAvailable = true;
 let scene, camera, sun, ground, grid, root, campusGroup, routeGroup, worldAgentGroup, bubbleGroup;
@@ -879,24 +879,20 @@ export function makeCharacter(agent) {
 }
 
 export function renderProfileCharacter(agent) {
+  const avatarImg = $("profileAvatarImg");
+  const avatarName = $("profileAvatarName");
+  if (avatarImg) {
+    avatarImg.src = getAvatarUrl(agent);
+  }
+  if (avatarName) {
+    avatarName.textContent = agent.name || "校园居民";
+  }
+
   if (!profileRoot) return;
   while (profileRoot.children.length) {
     disposeHierarchy(profileRoot.children[0]);
     profileRoot.remove(profileRoot.children[0]);
   }
-  const character = makeCharacter(agent);
-  character.scale.setScalar(1.42);
-  character.position.set(0, 0.12, 0);
-  profileRoot.add(character);
-  const nameplate = makeTextSprite(agent.name || "校园居民", {
-    fontsize: 18,
-    bg: "rgba(18, 49, 61, 0.84)",
-    color: "#f4fffb"
-  });
-  nameplate.scale.set(3.1, 1.12, 1);
-  nameplate.position.set(0, 2.55, 0);
-  profileRoot.add(nameplate);
-  profileRoot.rotation.set(0, -0.28, 0);
 }
 
 export function resize() {

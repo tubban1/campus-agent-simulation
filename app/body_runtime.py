@@ -99,6 +99,103 @@ def body_runtime_available(conn):
     return bool(conn.execute("PRAGMA table_info(agent_body_states)").fetchall())
 
 
+def ensure_agent_dorm_inventory(conn, resident_id: int):
+    """Seed initial dorm inventory for resident if they have none."""
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM inventory WHERE resident_id = ?",
+            (resident_id,),
+        ).fetchone()
+        cnt = int(row["cnt"] if row and row["cnt"] is not None else 0)
+        if cnt > 0:
+            return
+        default_items = [("方便面", 3), ("面包", 2), ("矿泉水", 3)]
+        for item_name, qty in default_items:
+            conn.execute(
+                """
+                INSERT INTO inventory (resident_id, item_name, quantity)
+                VALUES (?, ?, ?)
+                ON CONFLICT DO NOTHING
+                """,
+                (resident_id, item_name, qty),
+            )
+    except Exception:
+        pass
+
+
+def get_agent_inventory_summary(conn, resident_id: int) -> dict:
+    """Return dict of inventory item_name -> quantity for resident.
+    Pure read query: returns empty dict on error or missing inventory table.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT item_name, quantity FROM inventory WHERE resident_id = ? AND quantity > 0",
+            (resident_id,),
+        ).fetchall()
+        return {row["item_name"]: int(row["quantity"]) for row in rows}
+    except Exception:
+        return {}
+
+
+def consume_agent_inventory_item(conn, resident_id: int, item_name: str = None) -> str | None:
+    """Deduct 1 unit of item_name (or first available item) from resident's inventory.
+    Returns item_name consumed, or None if unavailable/error.
+    """
+    try:
+        row = None
+        if item_name:
+            row = conn.execute(
+                "SELECT item_name, quantity FROM inventory WHERE resident_id = ? AND item_name = ? AND quantity > 0",
+                (resident_id, item_name),
+            ).fetchone()
+        if not row:
+            row = conn.execute(
+                "SELECT item_name, quantity FROM inventory WHERE resident_id = ? AND quantity > 0 ORDER BY id LIMIT 1",
+                (resident_id,),
+            ).fetchone()
+        if not row:
+            return None
+        
+        target_item = row["item_name"]
+        new_qty = int(row["quantity"]) - 1
+        if new_qty > 0:
+            conn.execute(
+                "UPDATE inventory SET quantity = ? WHERE resident_id = ? AND item_name = ?",
+                (new_qty, resident_id, target_item),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM inventory WHERE resident_id = ? AND item_name = ?",
+                (resident_id, target_item),
+            )
+        return target_item
+    except Exception:
+        return None
+
+
+def restock_agent_inventory(conn, resident_id: int, item_name: str = "方便面", quantity: int = 2, max_cap: int = 10):
+    """Add items to resident's inventory with a safety cap."""
+    try:
+        existing = conn.execute(
+            "SELECT quantity FROM inventory WHERE resident_id = ? AND item_name = ?",
+            (resident_id, item_name),
+        ).fetchone()
+        if existing:
+            curr = int(existing["quantity"] or 0)
+            target = min(max_cap, curr + quantity)
+            conn.execute(
+                "UPDATE inventory SET quantity = ? WHERE resident_id = ? AND item_name = ?",
+                (target, resident_id, item_name),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO inventory (resident_id, item_name, quantity) VALUES (?, ?, ?)",
+                (resident_id, item_name, min(max_cap, quantity)),
+            )
+    except Exception:
+        pass
+
+
 def get_body_state(conn, resident_id):
     if not body_runtime_available(conn):
         return None

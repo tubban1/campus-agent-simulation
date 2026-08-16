@@ -132,7 +132,15 @@
         <div class="right-actions"><button id="openLifeCourse">生命历程</button><button id="closeProfile">关闭</button></div>
       </div>
       <div class="profile-body">
-        <div class="profile-visual"><canvas id="profileScene"></canvas></div>
+        <div class="profile-visual" id="profileVisual">
+          <canvas id="profileScene" style="display:none;"></canvas>
+          <div class="profile-avatar-badge-container" id="profileAvatarBadge">
+            <div class="profile-avatar-frame">
+              <img id="profileAvatarImg" src="" alt="Agent Avatar">
+            </div>
+            <div class="profile-avatar-name" id="profileAvatarName">Agent</div>
+          </div>
+        </div>
         <div class="profile-info">
           <h3>人物概览</h3>
           <div class="profile-message" id="profileSnapshot">正在读取人物画像...</div>

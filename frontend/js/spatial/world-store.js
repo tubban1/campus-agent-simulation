@@ -26,6 +26,37 @@ export const avatarFiles = [
   "26_newton.svg", "27_cixi.svg", "28_einstein.svg", "29_hepburn.svg", "30_steve_jobs.svg"
 ];
 
+export function getAvatarUrl(agentOrId) {
+  if (!agentOrId) return `/avatars/${avatarFiles[0]}`;
+  
+  let path = "";
+  let id = 1;
+  
+  if (typeof agentOrId === "object") {
+    id = Number(agentOrId.id || agentOrId.resident_id || 1);
+    const raw = agentOrId.avatar_image || agentOrId.avatar || "";
+    if (raw && String(raw).trim()) {
+      path = String(raw).trim();
+      if (!path.startsWith("/")) path = `/avatars/${path}`;
+    }
+  } else {
+    id = Number(agentOrId || 1);
+  }
+  
+  if (!path) {
+    const index = Math.max(0, Math.min(avatarFiles.length - 1, (id - 1 + avatarFiles.length) % avatarFiles.length));
+    path = `/avatars/${avatarFiles[index]}`;
+  }
+  
+  if (id >= 21 && id <= 30) {
+    path = path.replace(/\.png$/i, ".svg");
+  } else if (id >= 1 && id <= 20) {
+    path = path.replace(/\.svg$/i, ".png");
+  }
+  
+  return path;
+}
+
 export const defaultSpaces = [
   "校务处", "教学楼", "商业街", "图书馆", "宿舍区", "食堂", "操场"
 ].map((location, index) => ({

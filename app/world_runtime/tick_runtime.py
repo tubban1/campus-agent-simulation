@@ -268,7 +268,7 @@ def _advance_world_tick_locked(reason="background"):
             )
 
             # 自动刷新环境 real_time 维度时间与状态
-            sync_fn = globals().get("sync_world_time_environment") or pre_agent.get("sync_world_time_environment")
+            sync_fn = sync_world_time_environment if callable(globals().get("sync_world_time_environment")) else pre_agent.get("sync_world_time_environment")
             if sync_fn:
                 try:
                     sync_fn(conn, world_time)
@@ -276,7 +276,7 @@ def _advance_world_tick_locked(reason="background"):
                     logger.warning("Failed to sync world_time to environment: %s", sync_err)
 
             # 唤醒新闻编辑 Agent，自动搜集精彩动态并发布最新新闻
-            news_fn = globals().get("publish_agent_news")
+            news_fn = publish_agent_news if callable(globals().get("publish_agent_news")) else None
             if not news_fn:
                 import app.main as main_mod
                 news_fn = getattr(main_mod, "publish_agent_news", None)

@@ -218,8 +218,8 @@ def generate_llm_social_dialogue(conn, agent, target, action, location, goal):
     model_name = os.getenv("LLM_MODEL") or "configured-llm"
     try:
         from services.llm_service import ask_llm as _ask_llm
-        _ask_fn = globals().get("ask_llm") or _ask_llm
-        _log_fn = globals().get("log_model_call")
+        _ask_fn = ask_llm if callable(globals().get("ask_llm")) else _ask_llm
+        _log_fn = log_model_call if callable(globals().get("log_model_call")) else None
     except Exception:
         return None
 
@@ -270,7 +270,23 @@ def describe_runtime_action(conn, agent, action, destination, goal, day, observe
         content = f"{agent['name']} 在{destination}排队等待服务，资源压力让当前节奏变慢，目标：{goal}。"
         event_type = "world_agent_queue"
     elif action == "consume":
-        content = f"{agent['name']} 在{destination}完成一次校园消费或服务使用，目标：{goal}。"
+        from app.body_runtime import consume_agent_inventory_item, restock_agent_inventory
+        dest_lower = str(destination or "").lower()
+        is_dorm = any(token in dest_lower for token in ("宿舍", "公寓", "dorm"))
+        is_market = any(token in dest_lower for token in ("商业街", "超市", "便利店", "market", "shop"))
+        
+        if is_market:
+            restock_agent_inventory(conn, agent["id"], "方便面", 2)
+            content = f"{agent['name']} 在{destination}采购了便利选品与备用粮，补充了宿舍库存，目标：{goal}。"
+        elif is_dorm:
+            item_used = consume_agent_inventory_item(conn, agent["id"])
+            if item_used:
+                content = f"{agent['name']} 在{destination}享用了宿舍存粮（{item_used}），及时补充了体能，目标：{goal}。"
+            else:
+                content = f"{agent['name']} 在{destination}想找些存粮，但宿舍储备已被空盘，只得简单休息打理，目标：{goal}。"
+        else:
+            # 食堂 / 餐厅 / 餐饮场所用餐：不扣除宿舍存货
+            content = f"{agent['name']} 在{destination}享用了热腾腾的校园餐饮，及时补充了体力，目标：{goal}。"
         event_type = "world_agent_consume"
     elif action == "rest":
         content = f"{agent['name']} 在{destination}休息恢复精力，暂时放慢行动节奏，目标：{goal}。"

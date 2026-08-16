@@ -16,9 +16,24 @@ _DEPENDENCY_NAMES = {
     "infer_goal_category", "is_location_open_at_hour", "json_dumps", "load_json_text",
     "location_options_for_context", "log_model_call", "move_resident", "multiscale_goal_templates",
     "normalize_plan_step", "parse_goal_deadline", "plan_step_key", "population_runtime_available",
-    "record_goal_revision", "record_learning", "role_group", "rows_to_dicts", "timedelta",
     "update_agent_profile_after_action", "update_trajectory_from_outcome", "random", "os", "VALID_LOCATIONS",
 }
+
+# Default runtime dependency placeholders (overridden via configure())
+get_campus_environment = None
+active_world_branch_key = None
+get_agent_cognitive_context = None
+is_location_open_at_hour = None
+location_options_for_context = None
+active_schedule_rules = None
+VALID_LOCATIONS = ["宿舍区", "图书馆", "清芬园", "学堂路", "主楼", "近春园", "紫荆公寓"]
+get_body_state = None
+rows_to_dicts = (lambda rows: [dict(r) for r in rows])
+action_noise_for_agent = None
+WORLD_AUTONOMOUS_ACTIONS = [
+    "move", "observe", "chat", "reflect", "attend_class", "queue", "consume", "rest", "club_activity", "conflict", "collaborate", "late", "request_leave"
+]
+
 
 def configure(**bindings):
     module_globals = globals()
@@ -794,23 +809,41 @@ def record_plan_outcome(conn, agent, plan, step, decision, action, destination, 
 
 
 def build_runtime_perception(conn, agent, world_time, day, slot, plan, step, observed):
-    env = dict(get_campus_environment(conn, day))
-    branch_key = active_world_branch_key(conn)
-    cognitive_context = get_agent_cognitive_context(
-        conn,
-        agent["id"],
-        branch_key=branch_key,
-        limit=8,
-    )
+    env_fn = get_campus_environment
+    env = dict(env_fn(conn, day)) if callable(env_fn) else {}
+
+    branch_fn = active_world_branch_key
+    branch_key = branch_fn(conn) if callable(branch_fn) else "main"
+
+    cog_fn = get_agent_cognitive_context
+    cognitive_context = None
+    if callable(cog_fn):
+        try:
+            cognitive_context = cog_fn(conn, agent["id"], branch_key=branch_key, limit=8)
+        except Exception:
+            cognitive_context = None
+    if not cognitive_context:
+        cognitive_context = {
+            "observations": [], "beliefs": [], "spatial_memories": [],
+            "adaptive_memories": [], "strategy_states": [], "norm_beliefs": [],
+            "received_information": []
+        }
+
     location_counts = {
         row["location"]: row["count"]
         for row in conn.execute("SELECT location, COUNT(*) AS count FROM residents GROUP BY location").fetchall()
     }
     hour = world_time.hour
-    open_locations = [location for location in VALID_LOCATIONS if is_location_open_at_hour(location, hour)]
+
+    open_fn = is_location_open_at_hour or (lambda loc, h: True)
+    loc_opts_fn = location_options_for_context or (lambda r, h, w, loc, **kw: [])
+    sched_rules_fn = active_schedule_rules or (lambda c, r, h, e: [])
+
+    valid_locs = VALID_LOCATIONS or []
+    open_locations = [location for location in valid_locs if open_fn(location, hour)]
     realistic_options = [
         location
-        for location, _ in location_options_for_context(
+        for location, _ in loc_opts_fn(
             agent["role"],
             hour,
             env.get("weather"),
@@ -820,7 +853,7 @@ def build_runtime_perception(conn, agent, world_time, day, slot, plan, step, obs
             agent=agent,
         )
     ]
-    schedule_rules = active_schedule_rules(conn, agent["role"], hour, env)
+    schedule_rules = sched_rules_fn(conn, agent["role"], hour, env)
     relationships = conn.execute(
         """
         SELECT r.to_resident_id, residents.name, r.affinity, r.trust, r.cooperation, r.conflict, r.tension
@@ -833,7 +866,19 @@ def build_runtime_perception(conn, agent, world_time, day, slot, plan, step, obs
         (agent["id"],),
     ).fetchall()
     profile = conn.execute("SELECT energy, time_budget, mood, skills, strategy FROM agent_profiles WHERE resident_id = ?", (agent["id"],)).fetchone()
-    body_state = get_body_state(conn, agent["id"])
+    
+    body_state_fn = get_body_state
+    if not callable(body_state_fn):
+        from app.body_runtime import get_body_state as body_state_fn
+    body_state = body_state_fn(conn, agent["id"])
+
+    noise_fn = action_noise_for_agent or (lambda a: 0.0)
+    avail_actions = WORLD_AUTONOMOUS_ACTIONS or [
+        "move", "observe", "chat", "reflect", "attend_class", "queue", "consume", "rest", "club_activity", "conflict", "collaborate", "late", "request_leave"
+    ]
+
+    from app.body_runtime import get_agent_inventory_summary
+    inventory_summary = get_agent_inventory_summary(conn, agent["id"])
     return {
         "world_time": world_time.isoformat(),
         "slot": slot,
@@ -844,13 +889,14 @@ def build_runtime_perception(conn, agent, world_time, day, slot, plan, step, obs
             "energy": profile["energy"] if profile else None,
             "time_budget": profile["time_budget"] if profile else None,
             "mood": profile["mood"] if profile else "",
-            "trait_bias": action_noise_for_agent(agent),
+            "trait_bias": noise_fn(agent),
         },
         "body_state": body_state or {},
+        "inventory_summary": inventory_summary,
         "local_crowd": int(location_counts.get(agent["location"], 0)),
         "open_locations": open_locations,
         "realistic_location_options": realistic_options,
-        "available_actions": sorted(WORLD_AUTONOMOUS_ACTIONS),
+        "available_actions": sorted(avail_actions),
         "active_schedule_rules": [
             {
                 "action_type": row.get("action_type"),
@@ -891,106 +937,19 @@ def build_runtime_perception(conn, agent, world_time, day, slot, plan, step, obs
 
 
 def apply_wellbeing_priority_to_decision(conn, agent, decision, world_time):
+    """Pass-through decision maker. Emergency safety stop ONLY when health <= 0."""
     body_state = get_body_state(conn, agent["id"])
     if not body_state:
         return decision
     decision = dict(decision or {})
-    action = str(decision.get("action") or "observe")
-    destination = str(decision.get("location") or agent["location"])
-    hour = world_time.hour
-    hunger = float(body_state.get("hunger") or 0)
-    fatigue = float(body_state.get("fatigue") or 0)
-    sleep_debt = float(body_state.get("sleep_debt") or 0)
-    health = float(
-        body_state.get("health", 100)
-        if body_state.get("health") is not None
-        else 100
-    )
-    attention = float(
-        body_state.get("attention", 100)
-        if body_state.get("attention") is not None
-        else 100
-    )
-
-    def recovery_decision(next_action, next_location, goal, reason):
+    health = float(body_state.get("health", 100) if body_state.get("health") is not None else 100)
+    if health <= 0:
         return {
             **decision,
-            "action": next_action,
-            "location": next_location,
-            "goal": goal,
-            "reason": reason,
+            "action": "rest",
+            "location": agent["location"],
+            "goal": "身体虚脱，原地修养恢复",
+            "reason": "极度身体虚脱，触发底线安全休养。",
             "plan_relation": "rest",
-            "mode": f"{decision.get('mode') or 'rule'}+wellbeing-priority-v1",
-            "wellbeing_override": {
-                "previous_action": action,
-                "previous_location": destination,
-                "hunger": hunger,
-                "fatigue": fatigue,
-                "sleep_debt": sleep_debt,
-                "health": health,
-                "attention": attention,
-            },
         }
-
-    hunger_instruction = hunger_recovery_instruction(
-        action=action,
-        destination=destination,
-        current_location=agent["location"],
-        hunger=hunger,
-        hydration=float(body_state.get("hydration") or 0),
-        hour=hour,
-        is_location_open=is_location_open_at_hour,
-    )
-    if hunger_instruction:
-        profile = conn.execute("SELECT energy FROM agent_profiles WHERE resident_id = ?", (agent["id"],)).fetchone()
-        current_energy = int(profile["energy"]) if profile and profile["energy"] is not None else int(agent.get("energy") or 100)
-        if (
-            hunger_instruction["location"] != agent["location"]
-            and current_energy < 8
-        ):
-            return recovery_decision(
-                "rest",
-                agent["location"],
-                "精力不足，先原地休息恢复行动能力",
-                "当前精力不足以安全前往补给点，先恢复再继续补给。",
-            )
-        return recovery_decision(
-            hunger_instruction["action"],
-            hunger_instruction["location"],
-            hunger_instruction["goal"],
-            hunger_instruction["reason"],
-        )
-
-    if health < 35 and action != "rest":
-        return recovery_decision(
-            "rest",
-            "宿舍区",
-            "健康状态偏低，先回宿舍休息恢复",
-            "健康状态不足以支撑普通行动，优先进入恢复节奏。",
-        )
-
-    if fatigue >= 88 and action != "rest":
-        return recovery_decision(
-            "rest",
-            "宿舍区",
-            "疲劳过高，先休息恢复体能",
-            "疲劳已达到行动风险阈值，暂缓原计划并回宿舍休息。",
-        )
-
-    if sleep_debt >= 85 and action not in {"rest", "reflect"}:
-        return recovery_decision(
-            "rest",
-            "宿舍区",
-            "睡眠债过高，优先补觉恢复注意力",
-            "睡眠债过高会持续拖累健康与注意力，先补充睡眠。",
-        )
-
-    if attention < 15 and action in {"attend_class", "collaborate"}:
-        return recovery_decision(
-            "rest",
-            agent["location"],
-            "注意力不足，优先在当前区域休息补充恢复",
-            "注意力较低，先在当前环境进行轻量休息与补充，恢复后再继续原计划。",
-        )
-
     return decision

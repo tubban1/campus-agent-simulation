@@ -185,6 +185,9 @@ def _initialize_new_resident_runtime(
         )
     if _table_exists(conn, "economic_actors"):
         seed_economy_foundation(conn)
+    if _table_exists(conn, "inventory"):
+        from app.body_runtime import ensure_agent_dorm_inventory
+        ensure_agent_dorm_inventory(conn, resident_id)
 
 
 def seed_population_runtime(conn, now=None):
@@ -192,6 +195,10 @@ def seed_population_runtime(conn, now=None):
     residents = conn.execute(
         "SELECT id, role, location, created_at FROM residents ORDER BY id"
     ).fetchall()
+    if _table_exists(conn, "inventory"):
+        from app.body_runtime import ensure_agent_dorm_inventory
+        for resident in residents:
+            ensure_agent_dorm_inventory(conn, resident["id"])
     created = roles = residencies = 0
     for resident in residents:
         entered_at = resident["created_at"] or now

@@ -130,10 +130,11 @@ class CausalActionRuntimeTest(unittest.TestCase):
             VALUES (1, 50, 30, 20, 20, 60, 60, 80, 0)
             """
         )
+        # 1. 虚脱底线测试 (health <= 0): 强制安全休养
         self.conn.execute(
             """
             UPDATE agent_body_states
-            SET hunger = 96, fatigue = 30, health = 80, attention = 60
+            SET hunger = 96, fatigue = 90, health = 0, attention = 10
             WHERE resident_id = 1
             """
         )
@@ -144,7 +145,7 @@ class CausalActionRuntimeTest(unittest.TestCase):
             self.conn,
             "test_tick",
             "测试 tick",
-            "开始测试饥饿恢复兜底",
+            "开始测试饥饿与虚脱安全保护",
         )
         tick = self.conn.execute(
             """
@@ -165,7 +166,7 @@ class CausalActionRuntimeTest(unittest.TestCase):
             ).fetchone()
         )
         due_plan = {
-            "intent": "测试饥饿恢复",
+            "intent": "测试虚脱恢复",
             "steps": [
                 {
                     "time": "11:00",
@@ -201,13 +202,9 @@ class CausalActionRuntimeTest(unittest.TestCase):
                 parent_event_id=parent["id"],
             )
 
-        body = self.conn.execute(
-            "SELECT hunger FROM agent_body_states WHERE resident_id = 1"
-        ).fetchone()
         payload = main.load_json_text(result["event"]["payload"], {})
         self.assertTrue(result["success"])
-        self.assertEqual(payload["action"], "consume")
-        self.assertLess(body["hunger"], 96)
+        self.assertEqual(payload["action"], "rest")
 
     def test_news_classification_ignores_internal_llm_fallback_reason(self):
         payload = {
