@@ -212,12 +212,12 @@ class LLMFactory:
         admin_token: Optional[str] = None,
     ) -> BaseLLMProvider:
         # 始终强行加载最新的 .env 文件，防止内存环境变量滞后
-        load_dotenv(ENV_PATH, override=True)
+        load_dotenv(ENV_PATH, override=False)
 
         p_name = (
             provider_name
             if provider_name is not None
-            else (os.getenv("DEFAULT_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "").strip().lower()
+            else (os.getenv("LLM_PROVIDER") or os.getenv("DEFAULT_LLM_PROVIDER") or "").strip().lower()
         )
 
         # 尝试根据供应商前缀获取预设配置 (如 DEEPSEEK_API_KEY, GEMINI_API_KEY, VLLM_ADMIN_TOKEN 等)
@@ -255,14 +255,16 @@ class LLMFactory:
         target_admin_token = admin_token if admin_token is not None else env_admin_token
 
         # 自动识别协议与推断 provider 类型
-        if ":generateContent" in target_url or "googleapis.com" in target_url or "gemini" in target_url:
+        if p_name in cls._PROVIDERS:
+            provider_cls = cls._PROVIDERS[p_name]
+        elif ":generateContent" in target_url or "googleapis.com" in target_url or "gemini" in target_url:
             provider_cls = GeminiProvider
         elif "ollama" in target_url or "11434" in target_url:
             provider_cls = OllamaProvider
         elif "anthropic" in target_url or p_name in ("anthropic", "claude"):
             provider_cls = AnthropicProvider
         else:
-            provider_cls = cls._PROVIDERS.get(p_name, OpenAIProvider)
+            provider_cls = OpenAIProvider
 
         return provider_cls(
             api_key=target_key,

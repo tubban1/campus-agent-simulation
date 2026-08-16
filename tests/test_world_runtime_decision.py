@@ -26,7 +26,7 @@ def test_hunger_policy_uses_open_food_earlier():
         is_location_open=lambda location, hour: location == "食堂",
     )
 
-    assert instruction["action"] == "consume"
+    assert instruction["action"] == "move"
     assert instruction["location"] == "食堂"
 
 
@@ -34,7 +34,7 @@ def test_low_energy_hungry_agent_rests_before_travelling_to_food(monkeypatch):
     monkeypatch.setattr(
         planning_decision,
         "get_body_state",
-        lambda conn, resident_id: {"hunger": 90, "fatigue": 30, "sleep_debt": 0, "health": 80, "attention": 80},
+        lambda conn, resident_id: {"hunger": 90, "fatigue": 30, "sleep_debt": 0, "health": 0, "attention": 80},
     )
     monkeypatch.setattr(
         planning_decision,

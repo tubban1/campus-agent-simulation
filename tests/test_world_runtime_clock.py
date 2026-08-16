@@ -53,7 +53,8 @@ def test_world_tick_due_uses_configured_interval():
     assert not world_tick_due(runtime, now=now)
 
 
-def test_world_tick_due_uses_quiet_interval_during_deep_night():
+def test_world_tick_due_uses_quiet_interval_during_deep_night(monkeypatch):
+    monkeypatch.setenv("WORLD_NIGHT_TICK_INTERVAL_SECONDS", "900")
     now = datetime(2026, 8, 7, 4, 0, tzinfo=WORLD_TZ)
     runtime = {
         "status": "running",

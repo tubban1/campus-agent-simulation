@@ -1,5 +1,7 @@
 """Goal, planning, decision and perception runtime services."""
 
+from datetime import datetime, timedelta
+
 _MODULE_NAME = __name__
 _DEPENDENCY_NAMES = {
     "HTTPException", "WORLD_AUTONOMOUS_ACTIONS", "action_noise_for_agent", "action_score",
@@ -17,7 +19,17 @@ _DEPENDENCY_NAMES = {
     "location_options_for_context", "log_model_call", "move_resident", "multiscale_goal_templates",
     "normalize_plan_step", "parse_goal_deadline", "plan_step_key", "population_runtime_available",
     "update_agent_profile_after_action", "update_trajectory_from_outcome", "random", "os", "VALID_LOCATIONS",
+    "record_goal_revision",
 }
+
+def _default_record_goal_revision(conn, goal_id, resident_id, revision_type, before=None, after=None, reason="", trigger_type="runtime", tick_id=None):
+    try:
+        from app.main import record_goal_revision as main_record
+        return main_record(conn, goal_id, resident_id, revision_type, before=before, after=after, reason=reason, trigger_type=trigger_type, tick_id=tick_id)
+    except Exception:
+        pass
+
+record_goal_revision = _default_record_goal_revision
 
 # Default runtime dependency placeholders (overridden via configure())
 get_campus_environment = None
@@ -26,6 +38,17 @@ get_agent_cognitive_context = None
 is_location_open_at_hour = None
 location_options_for_context = None
 active_schedule_rules = None
+def role_group(role):
+    text = str(role or "")
+    if any(k in text for k in ("教师", "导师", "教授", "讲师", "院士")):
+        return "teacher"
+    if any(k in text for k in ("商家", "店主", "经理", "餐饮")):
+        return "business"
+    if any(k in text for k in ("管理员", "后勤", "保洁", "安保", "校医")):
+        return "service"
+    return "student"
+
+
 VALID_LOCATIONS = ["宿舍区", "图书馆", "清芬园", "学堂路", "主楼", "近春园", "紫荆公寓"]
 get_body_state = None
 rows_to_dicts = (lambda rows: [dict(r) for r in rows])

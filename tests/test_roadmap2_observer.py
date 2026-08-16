@@ -7,6 +7,7 @@ from app.db.bootstrap_schema import (
     ensure_roadmap2_observer_system,
     ensure_space_system,
 )
+from app.main import ensure_social_system_tables
 from app.perception.continuity import (
     detect_continuity_gaps,
     generate_agent_hypotheses,
@@ -24,6 +25,7 @@ class TestRoadmap2ObserverSystem(unittest.TestCase):
     def setUp(self):
         self.conn = get_connection()
         ensure_campus_state_table(self.conn, allow_ddl=True)
+        ensure_social_system_tables(self.conn, allow_ddl=True)
         ensure_space_system(self.conn, allow_ddl=True)
         ensure_roadmap2_observer_system(self.conn, allow_ddl=True)
 

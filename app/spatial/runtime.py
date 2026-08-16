@@ -260,11 +260,13 @@ def _reachable_destination_route(
         except RouteNotFoundError as exc:
             last_error = exc
 
+    if last_error:
+        raise last_error
     # Fallback to stay at starting node if no route can be planned to any candidate
     start_node = next((n for n in nodes if int(n["id"]) == int(start_node_id)), None)
     if start_node:
         return start_node, {"edge_ids": [], "node_ids": [int(start_node_id)], "distance_meters": 0.0, "cost_minutes": 0.0}
-    raise last_error or RouteNotFoundError("No traversable route to destination")
+    raise RouteNotFoundError("No traversable route to destination")
 
 
 def _check_destination_admission(conn, target_node, world_time, resident_id):

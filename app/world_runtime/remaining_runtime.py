@@ -666,6 +666,13 @@ def perceive_environment(conn, resident_id):
     return perception
 
 
+def plan_step_key(step):
+    return "|".join(
+        str(step.get(key, "")).strip()
+        for key in ("time", "action", "location", "goal")
+    )
+
+
 def choose_plan_step(plan, world_time, current_location="校园"):
     steps = plan.get("steps") or []
     if not steps:

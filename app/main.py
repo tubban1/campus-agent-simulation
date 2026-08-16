@@ -2100,7 +2100,10 @@ GOAL_RELEVANT_ACTIONS = {
 
 
 def goal_progress_delta(goal, action, adherence):
-    relevant = action in GOAL_RELEVANT_ACTIONS.get(goal.get("category"), GOAL_RELEVANT_ACTIONS["general"])
+    relevant = (
+        action in GOAL_RELEVANT_ACTIONS.get(goal.get("category"), GOAL_RELEVANT_ACTIONS["general"])
+        or (action == "move" and adherence in ("followed", "adjusted"))
+    )
     if not relevant:
         return 0
     base = {"short": 12, "medium": 5, "long": 2}.get(goal.get("horizon"), 1)

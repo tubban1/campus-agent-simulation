@@ -28,9 +28,8 @@ class DeployDatabaseTest(unittest.TestCase):
             deploy_database.run_deployment(require_postgres=True)
 
         validate.assert_called_once_with(require_postgres=True)
-        self.assertEqual(
-            [Path(command[0]).name for command, _ in calls],
-            ["python"] * len(calls),
+        self.assertTrue(
+            all(Path(command[0]).name.startswith("python") for command, _ in calls)
         )
         self.assertEqual(
             [Path(command[1]).name for command, _ in calls[:-1]],

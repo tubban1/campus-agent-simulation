@@ -21,7 +21,7 @@ def memory_db():
     conn.execute("PRAGMA foreign_keys = ON;")
 
     # Initialize basic schemas
-    conn.execute(CAMPUS_STATE_SQL)
+    conn.executescript(CAMPUS_STATE_SQL)
     conn.execute("""
     CREATE TABLE IF NOT EXISTS system_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
