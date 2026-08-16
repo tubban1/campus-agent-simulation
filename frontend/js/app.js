@@ -4,7 +4,7 @@
  */
 import { ApiClient } from "./api-client.js?v=20260811-profile-timeoutfix";
 import { $, colors, avatarFiles, getAvatarUrl, defaultSpaces, WorldStore, escapeHtml } from "./spatial/world-store.js?v=20260816-fix-click";
-import { initOrUpdateMapLibreMap, getMapLibreInstance, resolveCoordinates, refreshMapLibreMarkers } from "./spatial/maplibre-map.js?v=20260815-sync-v16";
+import { initOrUpdateMapLibreMap, getMapLibreInstance, resolveCoordinates, refreshMapLibreMarkers } from "./spatial/maplibre-map.js?v=20260816-mapfix-v2";
 import {
   initThreeScene,
   resizeProfile,
@@ -126,8 +126,18 @@ function requestSpatialViewport(nextViewport, fitCamera = false) {
   if (!nextViewport || (sameScale && viewportKey(nextViewport) === viewportKey(sceneViewport))) return;
   sceneViewport = nextViewport;
   clearTimeout(viewportLoadTimer);
-  viewportLoadTimer = setTimeout(() => loadSpatialWorld(true, false, fitCamera), 120);
+  viewportLoadTimer = setTimeout(() => loadSpatialWorld(true, false, fitCamera), 60);
 }
+
+window.onMapViewportChanged = function (bounds) {
+  if (!bounds) return;
+  requestSpatialViewport({
+    minX: bounds.minX,
+    maxX: bounds.maxX,
+    minZ: bounds.minZ,
+    maxZ: bounds.maxZ
+  });
+};
 
 window.requestSpatialViewportAtMetric = requestViewportAtMetric;
 window.requestSpatialViewportAtLngLat = function (lng, lat, zoom) {
@@ -272,20 +282,12 @@ async function loadSpatialWorlds() {
     if (select) {
       select.disabled = false;
       if (spatialWorlds.length) {
-        const sectorOptions = spatialWorlds.map((w, idx) => {
-          const sectorId = `Sector-${String(idx + 1).padStart(2, "0")}`;
+        const options = spatialWorlds.map(w => {
           const isTsinghua = w.world_key.includes("tsinghua") || w.world_key === "default";
-          const label = isTsinghua ? `🌐 World2 · ${sectorId}: ${w.name} (已连通 · ${w.node_count} 节点)` : `🌐 World2 · ${sectorId}: ${w.name} (${w.node_count} 节点)`;
+          const label = isTsinghua ? `🌐 ${w.name} (已连通 · ${w.node_count} 节点)` : `🌐 ${w.name} (${w.node_count} 节点)`;
           return `<option value="${w.world_key}" ${w.world_key === currentWorldKey ? "selected" : ""}>${label}</option>`;
         }).join("");
-
-        const futureSectors = `
-          <option value="" disabled>───────────── World2 待拓扑通道 ─────────────</option>
-          <option value="" disabled>🔒 Sector-02: 中关村科技创新区 (待解锁通道)</option>
-          <option value="" disabled>🔒 Sector-03: 硅谷数字孪生园区 (跨国维度联通中)</option>
-          <option value="" disabled>🔒 Sector-04: 虚拟赛博空间 (元宇宙多 Agent 协同)</option>
-        `;
-        select.innerHTML = sectorOptions + futureSectors;
+        select.innerHTML = options;
       } else {
         select.innerHTML = `<option value="default">World2 维度未读到节点 (需要刷新或初始化数据)</option>`;
       }
@@ -1054,7 +1056,7 @@ function renderEnvironment() {
     ["环境天气", `${e.weather || "维度天气"} ${e.temperature ?? ""}°C`],
     ["维度时间", e.real_time || e.time_slot || "维度运行中"],
     ["生态压力", `${e.exam_pressure ?? "--"}/100`],
-    ["Sector 人流", `${e.campus_flow ?? "--"}/100`],
+    ["整体人流", `${e.campus_flow ?? "--"}/100`],
     ["维度氛围", e.campus_mood || "平稳"],
     ["事件热度", `${e.activity_heat ?? "--"}/100`]
   ];
@@ -1076,7 +1078,7 @@ function renderGeoSummary() {
   const coordinateLabel = Array.isArray(bounds) && bounds.length === 4
     ? `${Number(bounds[0]).toFixed(4)}, ${Number(bounds[1]).toFixed(4)} → ${Number(bounds[2]).toFixed(4)}, ${Number(bounds[3]).toFixed(4)}`
     : "等待 WGS84 坐标范围";
-  box.innerHTML = `<div class="geo-row"><span>Sector 空间</span><strong>${escapeHtml(world.name || currentWorldKey || "World2 维度")}</strong></div><div class="geo-row"><span>坐标系</span><strong>WGS84 + 本地米制</strong></div><div class="geo-row"><span>地理范围</span><strong>${escapeHtml(coordinateLabel)}</strong></div><div class="geo-row"><span>当前窗口</span><strong>${buildings} 设施节点 · ${agents} Agent</strong></div>`;
+  box.innerHTML = `<div class="geo-row"><span>地理空间</span><strong>${escapeHtml(world.name || currentWorldKey || "World2 维度")}</strong></div><div class="geo-row"><span>坐标系</span><strong>WGS84 + 本地米制</strong></div><div class="geo-row"><span>地理范围</span><strong>${escapeHtml(coordinateLabel)}</strong></div><div class="geo-row"><span>当前窗口</span><strong>${buildings} 设施节点 · ${agents} Agent</strong></div>`;
 }
 
 function renderWorldPulse() {
@@ -1091,7 +1093,7 @@ function renderWorldPulse() {
   const spaces = (WorldStore.world.spaces || {}).spaces || [];
   const activeSpaces = spaces.filter(space => (space.effective_status || space.status) === "开放").length;
   const eventCount = (WorldStore.world.events || []).length;
-  pulse.innerHTML = [["World2 居民", WorldStore.agents.length, "正在维度中自主运转"], ["开放 Sector", `${activeSpaces}/${spaces.length}`, "维度可达区域"], ["今日事件", eventCount, "环境与行动记录"], ["维度温度", `${e.temperature ?? "--"}°C`, e.weather || "模拟环境"]].map(([label, value, note]) => `<div class="pulse-item"><span class="pulse-label"><i></i>${label}</span><strong class="pulse-value">${value}</strong><span class="pulse-note">${note}</span></div>`).join("");
+  pulse.innerHTML = [["World2 居民", WorldStore.agents.length, "正在维度中自主运转"], ["开放空间", `${activeSpaces}/${spaces.length}`, "维度可达区域"], ["今日事件", eventCount, "环境与行动记录"], ["维度温度", `${e.temperature ?? "--"}°C`, e.weather || "模拟环境"]].map(([label, value, note]) => `<div class="pulse-item"><span class="pulse-label"><i></i>${label}</span><strong class="pulse-value">${value}</strong><span class="pulse-note">${note}</span></div>`).join("");
 }
 
 function currentWorldClock() {
@@ -1199,7 +1201,7 @@ function agentActivityStatus(agent) {
 }
 
 function actionPhrase(agent, event) {
-  const action = event?.payload?.action || "", location = event?.location || agent.location || "Sector 节点";
+  const action = event?.payload?.action || "", location = event?.location || agent.location || "地图节点";
   const deferred = event?.payload?.runtime_decision?.deferred_action;
   if (action === "move") return deferred ? `前往${location}，准备${deferred === "consume" ? "用餐" : deferred === "rest" ? "休息" : deferred === "attend_class" ? "研学" : "执行计划"}` : `前往${location}`;
   if (action === "consume") return `在${location}补充能量`;
@@ -1299,14 +1301,14 @@ function renderObserverHud() {
   }
 
   if ($("observerCardTitle")) $("observerCardTitle").textContent = activeWorld.name ? `World2 · ${activeWorld.name}` : "World2 · 平行世界观察舱";
-  if ($("observerSubtitle")) $("observerSubtitle").textContent = `Sector-01 · ${status} · ${worldDate} ${worldTime} · ${e.weather || "环境气象"} ${e.temperature ?? "--"}°C`;
+  if ($("observerSubtitle")) $("observerSubtitle").textContent = `${activeWorld.name || "清华大学主校区"} · ${status} · ${worldDate} ${worldTime} · ${e.weather || "环境气象"} ${e.temperature ?? "--"}°C`;
   if ($("observerMetrics")) {
     $("observerMetrics").innerHTML = [
-      `Sector: ${activeWorld.name || "清华校区"}`,
+      `空间: ${activeWorld.name || "清华大学主校区"}`,
       `坐标 ${boundsLabel}`,
       `维度时段 ${e.time_slot || "运行中"}`,
       `驻留 Agent ${WorldStore.agents.length} 位`,
-      `多 Sector 拓扑星图`
+      `多维度拓扑星图`
     ].map(text => `<span class="hud-chip">${text}</span>`).join("");
   }
   if ($("observerEvents")) {

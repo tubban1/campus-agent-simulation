@@ -3005,7 +3005,7 @@ def get_state():
             "SELECT * FROM city_events ORDER BY id DESC LIMIT 80"
         ).fetchall()
         return {
-            "world_type": "campus_closed_world",
+            "world_type": "multiverse_sector",
             "current_day": day,
             "locations": sorted(VALID_LOCATIONS),
             "environment": get_campus_environment(conn, day),
@@ -3472,6 +3472,48 @@ def get_campus_organizations():
         return list_organizations(conn, ensure_tables=ensure_social_system_tables, load_json=load_json_text)
 
 
+def get_world_v2_organizations(world_key: str = "default"):
+    with get_connection() as conn:
+        try:
+            rows = conn.execute(
+                "SELECT * FROM world_organizations WHERE world_key = ? AND status = 'active' ORDER BY id",
+                (world_key,),
+            ).fetchall()
+            if rows:
+                return rows_to_dicts(rows)
+        except Exception:
+            pass
+        return list_organizations(conn, ensure_tables=ensure_social_system_tables, load_json=load_json_text)
+
+
+def get_world_v2_spaces(world_key: str = "default"):
+    with get_connection() as conn:
+        try:
+            nodes = conn.execute(
+                "SELECT node_id, name, node_type, category, crowd_ratio FROM spatial_nodes WHERE world_key = ? ORDER BY node_id LIMIT 100",
+                (world_key,),
+            ).fetchall()
+            if nodes:
+                return {"world_key": world_key, "spaces": rows_to_dicts(nodes)}
+        except Exception:
+            pass
+        return get_space_snapshot(conn)
+
+
+def get_world_v2_environment(world_key: str = "default"):
+    with get_connection() as conn:
+        try:
+            row = conn.execute(
+                "SELECT * FROM world_environment_states WHERE world_key = ? ORDER BY day DESC, id DESC LIMIT 1",
+                (world_key,),
+            ).fetchone()
+            if row:
+                return dict(row)
+        except Exception:
+            pass
+        return get_campus_environment(conn)
+
+
 def get_group_goals():
     with get_connection() as conn:
         return list_group_goals(conn, ensure_tables=ensure_social_system_tables, rows_to_dicts=rows_to_dicts)
@@ -3480,7 +3522,11 @@ def get_group_goals():
 app.state.get_social_hierarchy = get_social_hierarchy
 app.state.get_social_relationships = get_social_relationships
 app.state.get_organizations = get_campus_organizations
+app.state.get_world_v2_organizations = get_world_v2_organizations
+app.state.get_world_v2_spaces = get_world_v2_spaces
+app.state.get_world_v2_environment = get_world_v2_environment
 app.state.get_groups = get_group_goals
+
 
 
 def create_group_goal(payload: GroupGoalRequest):
@@ -3626,7 +3672,7 @@ app.state.backfill_agent_daily_diaries = backfill_agent_daily_diaries
 
 def ai_newspaper_today():
     data = newspaper_today()
-    prompt = f"请把下面校园世界数据写成一份简短校园日报，分为标题、环境、主要事件、趋势判断：{json_dumps(data, ensure_ascii=False)}"
+    prompt = f"请把下面平行世界数据写成一份简短维度日报，分为标题、环境、主要事件、趋势判断：{json_dumps(data, ensure_ascii=False)}"
     return {"day": data["title"], "newspaper": ask_llm(prompt), "source": data}
 
 

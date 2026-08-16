@@ -294,15 +294,21 @@ def get_connection():
             raise RuntimeError("PostgreSQL support requires psycopg[binary].") from exc
         from app.db.engine import get_database_schema
 
-        connection = psycopg.connect(
-            os.environ["DATABASE_URL"].strip(),
-            row_factory=dict_row,
-            prepare_threshold=None,
-        )
-        connection.execute(
-            f'SET search_path TO "{get_database_schema()}"'
-        )
-        return PostgresConnection(connection)
+        try:
+            connection = psycopg.connect(
+                os.environ["DATABASE_URL"].strip(),
+                row_factory=dict_row,
+                prepare_threshold=None,
+            )
+            connection.execute(
+                f'SET search_path TO "{get_database_schema()}"'
+            )
+            return PostgresConnection(connection)
+        except Exception as exc:
+            logger.warning(
+                "PostgreSQL connection failed (%s: %s). Falling back to local SQLite DB at %s",
+                type(exc).__name__, exc, DB_PATH,
+            )
 
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH), timeout=30)

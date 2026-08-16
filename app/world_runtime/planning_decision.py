@@ -528,10 +528,10 @@ def decide_agent_action(conn, resident_id):
     ).fetchall()
 
     prompt = f"""
-你正在驱动一个真实地理校园世界中的 Agent。
+你正在驱动一个真实地理平行世界中的 Agent。
 
 当前日期：第 {day} 天
-校园环境：{json_dumps(env, ensure_ascii=False)}
+环境状态：{json_dumps(env, ensure_ascii=False)}
 空间状态（容量、开放状态和事件）：{json_dumps(get_space_snapshot(conn, day), ensure_ascii=False)}
 当前 Agent：{json_dumps(dict(resident), ensure_ascii=False)}
 其他 Agent：{json_dumps(rows_to_dicts(other_agents), ensure_ascii=False)}

@@ -57,22 +57,12 @@ export function getAvatarUrl(agentOrId) {
   return path;
 }
 
-export const defaultSpaces = [
-  "校务处", "教学楼", "商业街", "图书馆", "宿舍区", "食堂", "操场"
-].map((location, index) => ({
-  code: ["admin", "teaching", "business", "library", "dorm", "canteen", "playground"][index],
-  name: location,
-  location,
-  status: "开放",
-  effective_status: "开放",
-  crowd_percent: 0,
-  actual_agents: 0
-}));
+export const defaultSpaces = [];
 
 export const WorldStore = {
   world: {
-    environment: { weather: "维度天气", temperature: "--", time_slot: "实时" },
-    spaces: { spaces: defaultSpaces },
+    environment: { weather: "环境加载中", temperature: "--", time_slot: "实时" },
+    spaces: { spaces: [] },
     events: []
   },
   worldRuntime: null,
@@ -93,7 +83,7 @@ export const WorldStore = {
   newspaperView: "edition",
   newspaperRequestId: 0,
   externalInformation: [],
-  selectedWorldKey: "default",
+  selectedWorldKey: "tsinghua_main",
   scenePhase: "idle",
   sceneVersion: 1,
   sceneRequestToken: 0,
@@ -107,7 +97,7 @@ export const WorldStore = {
   },
 
   selectWorld(worldKey) {
-    const nextKey = worldKey || "default";
+    const nextKey = worldKey || "tsinghua_main";
     const isSameWorldReady = (nextKey === this.selectedWorldKey) &&
       this.scenePhase === "ready" &&
       (this.spatialScene?.nodes?.length || 0) > 0;
@@ -115,7 +105,7 @@ export const WorldStore = {
     this.selectedWorldKey = nextKey;
     if (!isSameWorldReady) {
       this.spatialScene = { nodes: [], edges: [] };
-      this.scenePhase = (nextKey === "default") ? "ready" : "loading";
+      this.scenePhase = "loading";
     }
   },
 

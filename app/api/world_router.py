@@ -138,3 +138,19 @@ def delayed_effects(request: Request, status: str = "", limit: int = 50):
 @router.get("/api/world/events")
 def events(request: Request, after_id: int = 0, limit: int = 50, branch_key: str = ""):
     return request.app.state.get_world_events(after_id, limit, branch_key)
+
+
+@router.get("/api/v2/worlds/{world_key}/organizations")
+def get_v2_world_organizations(world_key: str, request: Request):
+    return request.app.state.get_world_v2_organizations(world_key)
+
+
+@router.get("/api/v2/worlds/{world_key}/spaces")
+def get_v2_world_spaces(world_key: str, request: Request):
+    return request.app.state.get_world_v2_spaces(world_key)
+
+
+@router.get("/api/v2/worlds/{world_key}/environment")
+def get_v2_world_environment(world_key: str, request: Request):
+    return request.app.state.get_world_v2_environment(world_key)
+

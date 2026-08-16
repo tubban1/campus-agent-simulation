@@ -5,14 +5,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>World2 · Agent 平行世界</title>
-  <meta name="description" content="World2：由 Agent 自主驱动的互联平行宇宙。观察 Agent 在不同维度 Sector 中的移动、决策、社会博弈与关系演化。">
+  <meta name="description" content="World2：由 Agent 自主驱动的互联平行宇宙。观察 Agent 在不同平行空间中的移动、决策、社会博弈与关系演化。">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="alternate icon" href="/favicon.ico" sizes="32x32">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="World2 · Agent 平行世界">
   <meta property="og:title" content="World2 · Agent 平行世界">
-  <meta property="og:description" content="进入 World2 维度通道，观察 Agent 在平行世界 Sector 中的自主感知、决策与关系演化。">
+  <meta property="og:description" content="进入 World2 维度通道，观察 Agent 在平行世界中的自主感知、决策与关系演化。">
   <meta property="og:image" content="/share-image.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -22,7 +22,7 @@
   <meta name="twitter:image" content="/share-image.png">
   <link rel="stylesheet" href="/vendor/maplibre/maplibre-gl.css" />
   <script src="/vendor/maplibre/maplibre-gl.js"></script>
-  <link rel="stylesheet" href="/css/map.css?v=20260815-sync-v16" />
+  <link rel="stylesheet" href="/css/map.css?v=20260816-mapfix-v2" />
   <link rel="stylesheet" href="/css/app.css?v=20260811-dashboardrestore1" />
 </head>
 
@@ -32,7 +32,7 @@
       <div class="logo" style="background: linear-gradient(135deg, #1769aa, #45a878); font-size: 13px; font-weight: 900; letter-spacing: -0.5px;">W2</div>
       <div>
         <h1>World2 · Agent 平行世界</h1>
-        <div class="subtitle">Agent 驱动的自治平行宇宙 · 清华校区 Sector-01</div>
+        <div class="subtitle" id="topbarSubtitle">Agent 驱动的自治平行宇宙</div>
       </div>
     </div>
     <div class="actions"><span class="day" id="dayLabel">正在接入 World2 维度...</span><button id="openNewspaper">World2 日报</button><button
@@ -44,7 +44,7 @@
       <div class="observer-hud">
         <div class="hud-card">
           <h2 id="observerCardTitle">World2 · 平行世界观察舱</h2>
-          <p id="observerSubtitle">实时接入：清华校区 Sector-01 (已连通)...</p>
+          <p id="observerSubtitle">实时接入：清华大学主校区 (已连通)...</p>
           <div style="margin-top:6px"><select id="worldKeySelector" class="world-key-select" aria-label="切换 World2 平行空间维度"><option value="">正在接入 World2 星图网络…</option></select></div>
           <div class="hud-metrics" id="observerMetrics"><span class="hud-chip">读取中</span></div>
         </div>
@@ -54,8 +54,7 @@
           aria-label="放大地图">+</button><span class="camera-zoom-value" id="cameraZoomValue">地图</span><button
           id="cameraZoomOut" type="button" title="缩小地图" aria-label="缩小地图">−</button></div>
       <div class="observer-actions">
-        <div class="observer-focus"><strong id="observerFocusTitle">World2 自由观察模式</strong><span id="observerFocusText">点击 Sector
-            空间节点或 Agent 查看维度细节。</span></div>
+        <div class="observer-focus"><strong id="observerFocusTitle">World2 自由观察模式</strong><span id="observerFocusText">点击地图节点或选择 Agent 查看维度细节。</span></div>
         <div class="observe-buttons"><button id="jumpToData">↓
             切换数据维度</button><button id="jumpToAgents">World2 居民</button><button class="primary admin-only" id="hudWorldTick">推进
             Tick</button></div>
@@ -87,7 +86,7 @@
       <main class="centerboard">
         <section class="board-block wide">
           <div class="board-head">
-            <h2>World2 平行空间地图</h2><span class="small" id="campusMapMeta" style="padding:0">头像表示 Agent 当前所在 Sector 节点</span>
+            <h2>World2 平行空间地图</h2><span class="small" id="campusMapMeta" style="padding:0">头像表示 Agent 当前所在地图节点</span>
           </div>
           <div class="board-body">
             <div class="campus-map" id="campusMap">
@@ -107,7 +106,7 @@
         </section>
         <section class="board-block wide">
           <div class="board-head">
-            <h2>校园日报</h2><span class="small" style="padding:0">从 world runtime 自主提炼特别发现</span>
+            <h2>World2 维度日报</h2><span class="small" style="padding:0">从 world runtime 自主提炼特别发现</span>
           </div>
           <div class="board-body">
             <div class="activity-list" id="activityList">
@@ -117,7 +116,7 @@
         </section>
       </main>
       <aside class="right" id="agentPanel">
-        <h2 class="panel-title">校园居民</h2>
+        <h2 class="panel-title">World2 居民</h2>
         <div class="small" id="agentCount">点击人物进入个人介绍</div>
         <div class="agent-list" id="agentList"></div>
       </aside>
@@ -221,13 +220,13 @@
   </div>
   <div class="newspaper-overlay" id="newspaperOverlay">
     <article class="newspaper">
-      <div class="paper-top"><span class="small" style="padding:0">CAMPUS CLOSED WORLD</span>
+      <div class="paper-top"><span class="small" style="padding:0">WORLD2 MULTIVERSE</span>
         <div class="right-actions"><button id="paperPrev">上一期</button><button id="paperToday">今日</button><button
-            id="paperNext">下一期</button><button id="closeNewspaper">返回校园</button></div>
+            id="paperNext">下一期</button><button id="closeNewspaper">返回空间</button></div>
       </div>
       <div class="paper-kicker">RUNTIME FINDINGS FROM AUTONOMOUS AGENTS</div>
-      <h2 class="paper-name">校园世界时报</h2>
-      <p class="paper-date" id="paperDate">今日校园日报</p>
+      <h2 class="paper-name">World2 维度日报</h2>
+      <p class="paper-date" id="paperDate">今日维度日报</p>
       <div class="paper-tabs" id="paperTabs"><button class="active" data-paper-view="edition">本期日报</button><button
           data-paper-view="flashes">分时快讯</button></div>
       <p class="paper-load-status" id="paperLoadStatus" aria-live="polite"></p>
@@ -257,7 +256,7 @@
       </section>
     </article>
   </div>
-  <script type="module" src="/js/app.js?v=20260815-sync-v16"></script>
+  <script type="module" src="/js/app.js?v=20260816-mapfix-v2"></script>
 </body>
 
 </html>

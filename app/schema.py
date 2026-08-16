@@ -35,6 +35,57 @@ CREATE TABLE IF NOT EXISTS campus_state (
     consumption_index REAL NOT NULL DEFAULT 1.0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS world_environment_states (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    world_key TEXT NOT NULL DEFAULT 'default',
+    sector_id TEXT NOT NULL DEFAULT 'sector-01',
+    day INTEGER NOT NULL DEFAULT 1,
+    weather TEXT NOT NULL DEFAULT '晴',
+    temperature INTEGER NOT NULL DEFAULT 24,
+    humidity REAL NOT NULL DEFAULT 50.0,
+    rainfall INTEGER NOT NULL DEFAULT 0,
+    wind_speed REAL NOT NULL DEFAULT 0.0,
+    social_atmosphere TEXT NOT NULL DEFAULT '平稳',
+    economic_pressure REAL NOT NULL DEFAULT 1.0,
+    activity_heat INTEGER NOT NULL DEFAULT 50,
+    traffic_status TEXT NOT NULL DEFAULT '正常',
+    resource_pressure INTEGER NOT NULL DEFAULT 45,
+    safety_level INTEGER NOT NULL DEFAULT 90,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS world_organizations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    world_key TEXT NOT NULL DEFAULT 'default',
+    sector_id TEXT NOT NULL DEFAULT 'sector-01',
+    name TEXT NOT NULL,
+    organization_type TEXT NOT NULL,
+    goal TEXT NOT NULL DEFAULT '',
+    budget INTEGER NOT NULL DEFAULT 1000,
+    parent_org_id INTEGER,
+    resources TEXT NOT NULL DEFAULT '{}',
+    schedule TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS world_schedule_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    world_key TEXT NOT NULL DEFAULT 'default',
+    role_group TEXT NOT NULL,
+    action_type TEXT NOT NULL,
+    start_hour INTEGER NOT NULL DEFAULT 0,
+    end_hour INTEGER NOT NULL DEFAULT 24,
+    base_weight INTEGER NOT NULL DEFAULT 50,
+    priority INTEGER NOT NULL DEFAULT 10,
+    sector_template TEXT NOT NULL DEFAULT 'default',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 SPACE_SYSTEM_SQL = """

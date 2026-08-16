@@ -167,7 +167,7 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
   const container = $("maplibreContainer");
   if (!container || typeof maplibregl === "undefined") return;
 
-  const currentWorldKey = WorldStore.selectedWorldKey || "default";
+  const currentWorldKey = WorldStore.selectedWorldKey || "tsinghua_main";
   const spatialScene = WorldStore.spatialScene;
 
   const activeWorld = (spatialWorlds || []).find(w => w.world_key === currentWorldKey) || {};
@@ -260,6 +260,15 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
     maplibreInstance.on('zoomend', () => {
       syncAgentAvatarMarkers(latestAgentFeatures);
       updateViewportBounds();
+    });
+
+    maplibreInstance.on('styledata', () => {
+      if (maplibreInstance && maplibreInstance.isStyleLoaded()) {
+        const currentScene = WorldStore.spatialScene;
+        if (currentScene && Array.isArray(currentScene.nodes)) {
+          initOrUpdateMapLibreMap(WorldStore.spatialWorlds || []);
+        }
+      }
     });
 
     // Handle background click on blank map area to trigger physical map environment event
@@ -369,6 +378,7 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
 
     const updateSource = () => {
       if (!maplibreInstance) return;
+      if (!maplibreInstance.isStyleLoaded()) return;
 
       // 0. Spatial Edges & Weather Resistance Layer
       try {
@@ -391,8 +401,8 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
             source: 'campus-edges',
             paint: {
               'line-color': '#0288d1',
-              'line-width': ['interpolate', ['linear'], ['zoom'], 12, 1.5, 16, 2.8, 18, 4.5],
-              'line-opacity': 0.65
+              'line-width': ['interpolate', ['linear'], ['zoom'], 12, 0.75, 16, 1.2, 18, 1.8],
+              'line-opacity': 0.45
             }
           });
         }
@@ -403,8 +413,8 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
             filter: ['==', ['get', 'closed'], true],
             paint: {
               'line-color': '#ffb74d',
-              'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1.8, 18, 3.5],
-              'line-opacity': 0.75
+              'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1.0, 18, 1.8],
+              'line-opacity': 0.6
             }
           });
         }
@@ -417,8 +427,8 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
             filter: ['==', ['get', 'high_resistance'], true],
             paint: {
               'line-color': '#0288d1',
-              'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1.2, 18, 2.5],
-              'line-opacity': 0.4
+              'line-width': ['interpolate', ['linear'], ['zoom'], 14, 0.8, 18, 1.5],
+              'line-opacity': 0.3
             }
           });
         }
@@ -426,7 +436,7 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
         console.warn("MapLibre edges layer update warning:", edgeErr);
       }
 
-      // 1. POIs and Building Nodes Layer (Hierarchical Tiers)
+      // 1. POIs and Building Nodes Layer (3 Hierarchical Tiers based on zoom)
       try {
         if (maplibreInstance.getSource('campus-nodes')) {
           maplibreInstance.getSource('campus-nodes').setData({
@@ -439,7 +449,7 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
             data: { type: 'FeatureCollection', features: geojsonFeatures }
           });
 
-          // Tier 0: Major Landmarks / Big Nodes (Visible at all zoom levels, minzoom: 0)
+          // Tier 0: 大节点 · 核心地标 (Visible at all zoom levels, radius: 7px)
           maplibreInstance.addLayer({
             id: 'campus-nodes-layer',
             type: 'circle',
@@ -447,22 +457,22 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
             minzoom: 0,
             filter: ['==', ['get', 'tier'], 0],
             paint: {
-              'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 5, 14, 8, 18, 13],
+              'circle-radius': 7,
               'circle-color': ['case', ['==', ['get', 'access_status'], 'closed'], '#d84315', ['>=', ['get', 'crowd_density'], 0.8], '#f9a825', '#1e88e5'],
-              'circle-stroke-width': 2.5,
+              'circle-stroke-width': 2,
               'circle-stroke-color': '#ffffff'
             }
           });
 
-          // Tier 1: Named Buildings / Medium Nodes (Visible from minzoom: 10.0)
+          // Tier 1: 中节点 · 具名建筑 (Visible when zoom > 14.1, radius: 5px)
           maplibreInstance.addLayer({
             id: 'campus-building-nodes-layer',
             type: 'circle',
             source: 'campus-nodes',
-            minzoom: 10.0,
+            minzoom: 14.1,
             filter: ['==', ['get', 'tier'], 1],
             paint: {
-              'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 4, 15, 7, 18, 11],
+              'circle-radius': 5,
               'circle-color': ['case', ['==', ['get', 'access_status'], 'closed'], '#d84315', ['>=', ['get', 'crowd_density'], 0.8], '#f9a825', '#5c6bc0'],
               'circle-opacity': 0.9,
               'circle-stroke-width': 1.5,
@@ -470,15 +480,15 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
             }
           });
 
-          // Tier 2: Minor POIs / Small Nodes (Visible from minzoom: 12.0)
+          // Tier 2: 小节点 · 设施/次要POI (Visible when zoom > 15.4, radius: 3px)
           maplibreInstance.addLayer({
             id: 'campus-poi-nodes-layer',
             type: 'circle',
             source: 'campus-nodes',
-            minzoom: 12.0,
+            minzoom: 15.4,
             filter: ['==', ['get', 'tier'], 2],
             paint: {
-              'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 3, 16, 5, 19, 8],
+              'circle-radius': 3,
               'circle-color': '#009688',
               'circle-opacity': 0.8,
               'circle-stroke-width': 1,
@@ -621,17 +631,24 @@ export function initOrUpdateMapLibreMap(spatialWorlds = [], { fitToBounds = fals
 
     const runUpdate = () => {
       try {
-        updateSource();
+        if (maplibreInstance && maplibreInstance.isStyleLoaded()) {
+          updateSource();
+        }
       } catch (err) {
         console.warn("MapLibre updateSource error:", err);
       }
     };
 
     runUpdate();
-    if (!maplibreInstance.isStyleLoaded() && !maplibreInstance.loaded()) {
-      maplibreInstance.once('load', runUpdate);
-      maplibreInstance.once('styledata', runUpdate);
-      setTimeout(runUpdate, 250);
+    if (maplibreInstance && !maplibreInstance.isStyleLoaded()) {
+      const onStyleReady = () => {
+        if (maplibreInstance && maplibreInstance.isStyleLoaded()) {
+          runUpdate();
+        }
+      };
+      maplibreInstance.once('load', onStyleReady);
+      maplibreInstance.once('styledata', onStyleReady);
+      setTimeout(onStyleReady, 300);
     }
   }
 }

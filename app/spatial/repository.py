@@ -87,12 +87,16 @@ class SpatialRepository:
 
         name_map = {
             "tsinghua_main": "清华大学主校区",
-            "tsinghua": "清华大学",
+            "tsinghua": "清华大学主校区",
+            "default": "主平行世界",
             "eth_zentrum": "ETH 站前校区",
         }
 
         worlds = []
         for wk, nodes in world_nodes.items():
+            if wk == "default" and len(world_nodes) > 1:
+                continue
+
             node_id_set = {n["id"] for n in nodes}
             edges_count = sum(
                 1 for e in all_edges if e["from_node_id"] in node_id_set and e["to_node_id"] in node_id_set
@@ -110,7 +114,7 @@ class SpatialRepository:
             worlds.append(
                 {
                     "world_key": wk,
-                    "name": name_map.get(wk, f"校园世界 ({wk})"),
+                    "name": name_map.get(wk, f"平行空间 ({wk})"),
                     "node_count": len(nodes),
                     "edge_count": edges_count,
                     "is_real_world": True,
