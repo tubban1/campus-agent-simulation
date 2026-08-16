@@ -29,19 +29,13 @@ def configure(**bindings):
 
 
 def ensure_world_runtime_tables(conn, *, allow_ddl=False):
-    global WORLD_SCHEMA_READY
-    if WORLD_SCHEMA_READY:
-        return
     with WORLD_SCHEMA_LOCK:
-        if WORLD_SCHEMA_READY:
-            return
         if using_postgres() and hasattr(conn, "_connection") and not allow_ddl:
             conn.execute(
                 "SELECT 1 FROM world_runtime WHERE id = ?",
                 (WORLD_RUNTIME_ID,),
             ).fetchone()
             conn.execute("SELECT 1 FROM world_event_stream LIMIT 1").fetchone()
-            WORLD_SCHEMA_READY = True
             return
         ensure_social_system_tables(conn, allow_ddl=allow_ddl)
         if allow_ddl:
@@ -126,7 +120,6 @@ def ensure_world_runtime_tables(conn, *, allow_ddl=False):
             "UPDATE world_event_stream SET branch_key = 'main' WHERE branch_key = ''"
         )
         seed_agent_personality_traits(conn)
-        WORLD_SCHEMA_READY = True
 
 
 def append_world_event(

@@ -16,6 +16,8 @@ def configure(**bindings):
 def _initialize_social_system_tables(conn, *, allow_ddl=False):
     ensure_agent_profile_table(conn, allow_ddl=allow_ddl)
     if allow_ddl:
+        from app.models import SCHEMA_SQL
+        conn.executescript(SCHEMA_SQL)
         conn.executescript(SOCIAL_SYSTEM_SQL)
         conn.executescript(BEHAVIOR_SYSTEM_SQL)
     ensure_table_columns(

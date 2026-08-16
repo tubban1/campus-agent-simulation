@@ -94,6 +94,9 @@ class OpenAIProvider(BaseLLMProvider):
 
         return url, headers, body
 
+    def is_configured(self) -> bool:
+        return bool(self.api_key or self.admin_token)
+
     def parse_response(self, data: Dict[str, Any]) -> str:
         try:
             return data["choices"][0]["message"]["content"]
@@ -130,6 +133,9 @@ class GeminiProvider(BaseLLMProvider):
             ]
         }
         return url, headers, body
+
+    def is_configured(self) -> bool:
+        return bool(self.api_key or self.admin_token)
 
     def parse_response(self, data: Dict[str, Any]) -> str:
         try:

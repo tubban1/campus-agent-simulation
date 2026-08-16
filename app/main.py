@@ -562,14 +562,8 @@ from app.db.bootstrap_schema import (
 )
 
 def ensure_social_system_tables(conn, *, allow_ddl=False):
-    global SOCIAL_SCHEMA_READY
-    if SOCIAL_SCHEMA_READY:
-        return
     with SOCIAL_SCHEMA_LOCK:
-        if SOCIAL_SCHEMA_READY:
-            return
         _initialize_social_system_tables(conn, allow_ddl=allow_ddl)
-        SOCIAL_SCHEMA_READY = True
 
 
 

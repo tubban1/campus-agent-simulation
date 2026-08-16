@@ -284,12 +284,13 @@ def build_rule_based_plan(conn, resident, window_start, window_end, world_time=N
     else:
         intent = "整理一天收获并进行轻量社交"
     steps = []
-    offsets = [45, 255, 435]
+    offsets = [45, 255, 400]
     from app.spatial.location_catalog import best_real_location, choose_weighted_real_location
     for index, offset in enumerate(offsets):
         step_time = window_start + timedelta(minutes=offset + random.randint(-20, 20))
-        if step_time >= window_end:
-            step_time = window_end - timedelta(minutes=30)
+        max_step_time = window_end - timedelta(minutes=45)
+        if step_time > max_step_time:
+            step_time = max_step_time
         hour = step_time.hour
         res_loc = dict(resident).get("location", "")
         def _resolve_loc(act):
