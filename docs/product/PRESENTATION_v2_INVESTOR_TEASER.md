@@ -4,7 +4,6 @@
 **版本号**：v2.0 (Investor Teaser Edition)  
 **更新日期**：2026/08/17  
 **演讲者**：[World2 团队 / 饶良]  
-**历史版本参考**：[v1 基础版本 (2026/07/31)](./PROJECT_PRESENTATION_v1_20260731.md)
 
 ---
 
